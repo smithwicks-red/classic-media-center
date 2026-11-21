@@ -1,0 +1,137 @@
+--- a/codec-src/H264Stream.c
++++ b/codec-src/H264Stream.c
+@@ -128,6 +128,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <stdarg.h>
++#include "mc_core.h"      /* mc_avc_profile / mc_avc_verdict */
+ 
+ #ifndef H264STREAM_HOSTTEST
+ #include <Types.h>
+@@ -179,9 +180,15 @@
+ #define kAACSamplesPerPacket   1024
+ #define kVariableCompression   0xFFFEU
+ 
+-#define kUserAgent  "H264Stream/1.1 (Macintosh; PPC Mac OS 9; QuickTime 6)"
++/* An app that #includes this file (MediaCenter.c, with
++   H264STREAM_LIBRARY defined) may set its own names first. */
++#ifndef kUserAgent
++#define kUserAgent  "H264Stream/1.2 (Macintosh; PPC Mac OS 9; QuickTime 6)"
++#endif
+ #define kURLFileName "H264 Stream URL"
++#ifndef kLogFileName
+ #define kLogFileName "H264 Stream Log"
++#endif
+ 
+ 
+ /* ==================================================================
+@@ -661,6 +668,15 @@
+    Handles absolute http, https (downgraded, with a warning), scheme-
+    relative //host/x, root-relative /x and plain relative x.
+    Returns 0 ok, -1 on anything unusable. */
++/* https redirects. Rewriting https -> http once is worth a try (some
++   servers answer both), but archive.org's *.ca.archive.org storage
++   hosts send the http request straight back to https, which used to
++   loop until "Too many redirects". Now the second https redirect in
++   one HttpGet is final. MediaCenter sets gHttpsIsFailure = 1 so the
++   FIRST one is final and it can try its next mirror instead. */
++static int gHttpsIsFailure = 0;   /* set by the caller */
++static int gHttpsSeen = 0;        /* reset by HttpGet */
++
+ static int ResolveLocation(const URLParts *base, const char *loc, char *out)
+ {
+     if (strlen(loc) + 16 > kMaxURL) return -1;
+@@ -672,6 +688,14 @@
+     }
+     if (StrNCaseEq(loc, "https://", 8))
+     {
++        gHttpsSeen++;
++        if (gHttpsIsFailure || gHttpsSeen > 1)
++        {
++            Say("  The server insists on https:\n  %.200s\n"
++                "  This item needs HTTPS, which QuickTime 6 cannot fetch.\n",
++                loc);
++            return -1;
++        }
+         Say("  (The server redirects to https, which QuickTime 6 cannot\n"
+             "   fetch. Trying the same address over plain http.)\n");
+         sprintf(out, "http://%s", loc + 8);
+@@ -846,6 +870,7 @@
+ 
+     if (strlen(startURL) >= kMaxURL) { Say("  URL too long.\n"); return -1; }
+     strcpy(url, startURL);
++    gHttpsSeen = 0;
+ 
+     for (hops = 0; hops <= kMaxRedirects; hops++)
+     {
+@@ -1219,6 +1244,25 @@
+     if (strcmp(finalURL, url) != 0)
+         Say("Media URL after redirects: %s\n", finalURL);
+ 
++    /* Never hand QuickTime a stream our decoder cannot play: a High
++       profile file left QuickTime Player stuck behind a modal "required
++       compressor could not be found" alert. */
++    {
++        McAvcInfo info;
++        char      why[200];
++        int       found = mc_avc_profile(moov, moovLen, &info);
++        int       v = mc_avc_verdict(&info, found, why, sizeof(why));
++        Say("  %s\n", why);
++        if (v < 0)
++        {
++            MemFree(moov);
++            return -1;
++        }
++    }
++
++    /* The reference movie keeps the ORIGINAL URL: QuickTime follows
++       the redirect itself. A stored post-redirect storage-node URL
++       failed an hour later with -3162 (session 15). */
+     ref = BuildReferenceMovie(moov, moovLen, url, &refLen);
+     MemFree(moov);
+     if (ref == NULL) return -1;
+@@ -1536,6 +1580,17 @@
+         CToPStr(kLogFileName, pname);
+         if (FSMakeFSSpec(app.vRefNum, app.parID, pname, &spec) == fnfErr)
+             (void)FSpCreate(&spec, 'ttxt', 'TEXT', smSystemScript);
++        /* MSL's fopen "w" does not cut the file: a shorter run left the
++           previous run's tail behind. Cut it to 0 bytes ourselves. */
++        if (FSMakeFSSpec(app.vRefNum, app.parID, pname, &spec) == noErr)
++        {
++            short ref;
++            if (FSpOpenDF(&spec, fsRdWrPerm, &ref) == noErr)
++            {
++                (void)SetEOF(ref, 0);
++                (void)FSClose(ref);
++            }
++        }
+     }
+     gLog = fopen(kLogFileName, "w");
+ }
+@@ -1664,6 +1719,11 @@
+     return 0;
+ }
+ 
++#ifndef H264STREAM_LIBRARY
++/* Everything from here to main() is H264 Stream's own user interface.
++   An app that #includes this file with H264STREAM_LIBRARY defined
++   supplies its own UIStatus(), DoUpdate() and main(). */
++
+ /* ---------------- the dialog ---------------- */
+ 
+ /* Item numbers in the dialog built by MakeDialog. */
+@@ -2061,7 +2121,7 @@
+     InstallAEHandlers();
+ 
+     OpenLog();
+-    Say("H264 Stream 1.1 -- play an H.264/AAC .mp4 from the web\n");
++    Say("H264 Stream 1.2 -- play an H.264/AAC .mp4 from the web\n");
+     Say("in QuickTime Player 6. Plain http:// only.\n");
+ 
+     if (ReadURLFile(url, sizeof(url)))
+@@ -2082,4 +2142,5 @@
+     if (gLog) { fclose(gLog); gLog = NULL; }
+     return rc == 0 ? 0 : 1;
+ }
++#endif /* !H264STREAM_LIBRARY */
+ #endif /* !H264STREAM_HOSTTEST */

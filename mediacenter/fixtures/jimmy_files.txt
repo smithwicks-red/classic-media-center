@@ -1,0 +1,30 @@
+1x01-TheCage.mp4|h.264|394691246|1x01 - The Cage|derivative|640|480
+1x02-WhereNoManHasGoneBefore.mp4|h.264|313256504|1x02 - Where No Man Has Gone Before|derivative|640|480
+1x03-TheCorbomiteManeuver.mp4|h.264|314137361|1x03 - The Corbomite Maneuver|derivative|640|480
+1x04-MuddsWomen.mp4|h.264|313588818|1x04 - Mudd's Women|derivative|640|480
+1x05-TheEnemyWithin.mp4|h.264|313292094|1x05 - The Enemy Within|derivative|640|480
+1x06-TheManTrap.mp4|h.264|313797588|1x06 - The Man Trap|derivative|640|480
+1x07-TheNakedTime.mp4|h.264|313708894|1x07 - The Naked Time|derivative|640|480
+1x08-CharlieX.mp4|h.264|313523834|1x08 - Charlie X|derivative|640|480
+1x09-BalanceOfTerror.mp4|h.264|314093295|1x09 - Balance of Terror|derivative|640|480
+1x10-WhatAreLittleGirlsMadeOf.mp4|h.264|313448641|1x10 - What are Little Girls Made of|derivative|640|480
+1x11-DaggerOfTheMind.mp4|h.264|313423486|1x11 - Dagger of the Mind|derivative|640|480
+1x12-Miri.mp4|h.264|313000110|1x12 - Miri|derivative|640|480
+1x13-TheConscienceOfTheKing.mp4|h.264|313735435|1x13 - The Conscience of the King|derivative|640|480
+1x14-TheGalileoSeven.mp4|h.264|313231267|1x14 - The Galileo Seven|derivative|640|480
+1x15-CourtMartial.mp4|h.264|313752819|1x15 - Court Martial|derivative|640|480
+1x16-TheMenagerie-PartI.mp4|h.264|307189708|1x16 - The Menagerie - Part I|derivative|640|480
+1x17-TheMenagerie-PartIi.mp4|h.264|313190932|1x17 - The Menagerie - Part II|derivative|640|480
+1x18-ShoreLeave.mp4|h.264|313155677|1x18 - Shore Leave|derivative|640|480
+1x19-TheSquireOfGothos.mp4|h.264|313103069|1x19 - The Squire of Gothos|derivative|640|480
+1x20-Arena.mp4|h.264|313654198|1x20 - Arena|derivative|640|480
+1x21-TheAlternativeFactor.mp4|h.264|313473808|1x21 - The Alternative Factor|derivative|640|480
+1x22-TomorrowIsYesterday.mp4|h.264|312868914|1x22 - Tomorrow is Yesterday|derivative|640|480
+1x23-TheReturnOfTheArchons.mp4|h.264|313287201|1x23 - The Return of the Archons|derivative|640|480
+1x24-ATasteOfArmageddon.mp4|h.264|313307647|1x24 - A Taste of Armageddon|derivative|640|480
+1x25-SpaceSeed.mp4|h.264|313101303|1x25 - Space Seed|derivative|640|480
+1x26-ThisSideOfParadise.mp4|h.264|313730053|1x26 - This Side of Paradise|derivative|640|480
+1x27-TheDevilInTheDark.mp4|h.264|313914084|1x27 - The Devil in the Dark|derivative|640|480
+1x28-ErrandOfMercy.mp4|h.264|314316437|1x28 - Errand of Mercy|derivative|640|480
+1x29-TheCityOnTheEdgeOfForever.mp4|h.264|313845373|1x29 - The City on the Edge of Forever|derivative|640|480
+1x30-OperationAnnihilate.mp4|h.264|314067321|1x30 - Operation Annihilate!|derivative|640|480

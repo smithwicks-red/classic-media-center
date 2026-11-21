@@ -1,0 +1,32 @@
+--- /home/claude/ext/mt/macTLS/os9/ostls_async.h	2026-11-13 22:04:16.077332408 +0000
++++ ostls_async.h	2026-11-13 22:25:13.456348119 +0000
+@@ -105,6 +105,17 @@
+ 
+     /* Opaque to macTLS; retrieved via OSTLS_GetUserRefcon. */
+     void *user_refcon;
++
++    /* tls18 PATCH 1 (insecure option). 0 = full certificate validation
++     * (trust anchors, dates, host name) -- the default, and what a
++     * zero-filled config gives you. Nonzero = accept ANY certificate
++     * chain for this one connection: the chain is still parsed, and the
++     * error validation WOULD have produced is kept for the caller
++     * (OSTLS_GetIgnoredCertError), but it is not enforced. Session
++     * resumption (1.2 cache and 1.3 tickets) is neither offered nor
++     * stored by an insecure connection, so an unverified session can
++     * never be resumed by a verified one. Works on 1.2 and 1.3. */
++    int insecure_skip_verify;
+ } OSTLSConfig;
+ 
+ /*
+@@ -291,4 +302,11 @@
+  */
+ int         OSTLS_SHA384_KAT(void);
+ 
++/*
++ * tls18 PATCH 1 -- for a connection opened with insecure_skip_verify,
++ * the BR_ERR_X509_* code full validation would have returned (0 if the
++ * chain would have passed, -1 if not insecure or not yet known).
++ */
++int         OSTLS_GetIgnoredCertError(OSTLSConnection *conn);
++
+ #endif /* OSTLS_ASYNC_H */

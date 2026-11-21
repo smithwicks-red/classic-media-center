@@ -1,0 +1,15 @@
+PASS T1 https search+metadata, http chain -> stream (reference movie)
+PASS T2 https-only chain -> download -> valid local movie (7 checks)
+PASS T3 forced download (node serves http) -> valid local movie
+PASS T4 rerun reuses the complete file, no download
+PASS T5 moov-at-end: Range probe + download -> valid local movie
+PASS T6 High profile refused before any download
+PASS T7 file changed between check and download -> refused, partial removed
+PASS T8 server drops mid-download -> no partial file (msg=The connection broke before the end.)
+PASS T9 Cmd-period during download -> stopped, no partial file
+PASS T10 disk full -> refused before downloading (msg=Not enough disk space: this film needs 2 MB (plus 5 MB spare) and only 5 MB are free.)
+PASS T11 untrusted certificate -> msg=Certificate check failed: not signed by a known authority (BearSSL 62).
+PASS T12 same with insecure keyword -> works
+PASS T13 clock 1956 -> msg=Certificate check failed (clock is set to 1956?). Set the date in the Date &
+PASS T14 19.5 MB download: Downloaded 19067 KB in 0.2 s (95335 KB/s)
+mc02: 14 passed, 0 failed   (logs in /tmp/mc02test.4iiH3g)

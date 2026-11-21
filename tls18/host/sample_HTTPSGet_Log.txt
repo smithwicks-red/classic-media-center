@@ -1,0 +1,63 @@
+HTTPS Get 0.1 (tls18) -- macTLS (BearSSL) over classic Open Transport
+TickCount at start: 73211
+Mac clock: local secs since 1904 = 3878029042, gmtDelta = 0 s
+Mac clock as UTC: 2026-11-20 14:17:22  (BearSSL days=740305) OK
+
+Self-tests:
+  SHA-384 KAT: PASS (0)
+  TLS 1.3 key schedule/record self-test: PASS (0 failures)
+  entropy self-test: PASS (0), fingerprint 41F14FB0 (must differ every launch)
+
+(URLs from "HTTPS Get URL")
+
+[1] GET https://localhost:18443/small
+  result: 0 (ok)
+  HTTP status 200, redirects 0, final URL https://localhost:18443/small
+  TLS 1.3, cipher suite 0x1303 TLS_CHACHA20_POLY1305_SHA256
+  ticks: connect 1, handshake 3, first byte 3, hop total 3, all 3
+  body: 81 bytes, Content-Length 81, type "text/plain"
+  idle callbacks: 12
+  first 81 bytes: hello from the test server\nhello from the test server\nhello from the test server\n
+
+[2] GET https://localhost:18445/small   (INSECURE: no certificate check)
+  result: 0 (ok)
+  HTTP status 200, redirects 0, final URL https://localhost:18445/small
+  TLS 1.3, cipher suite 0x1303 TLS_CHACHA20_POLY1305_SHA256
+  INSECURE: certificate NOT VALID (BearSSL would have said 56)
+  ticks: connect 1, handshake 2, first byte 2, hop total 2, all 2
+  body: 81 bytes, Content-Length 81, type "text/plain"
+  idle callbacks: 13
+  first 81 bytes: hello from the test server\nhello from the test server\nhello from the test server\n
+
+[3] GET https://localhost:18443/big
+  saving body to "Big.bin" 
+  result: 0 (ok)
+  HTTP status 200, redirects 0, final URL https://localhost:18443/big
+  TLS 1.3, cipher suite 0x1303 TLS_CHACHA20_POLY1305_SHA256
+  ticks: connect 1, handshake 1, first byte 1, hop total 18, all 18
+  body: 20971520 bytes, Content-Length 20971520, type "application/octet-stream"
+  idle callbacks: 1291
+  first 200 bytes: .....#*18?FMT[bipw~...................\n...&-4;BIPW^elsz....................\r..")07>ELSZahov}.......................%,3:AHOV]dkry.......................!(/6=DKRY`gnu|.......................$+29@GNU\cjq
+
+[4] GET https://localhost:18443/range
+  result: 0 (ok)
+  HTTP status 206, redirects 0, final URL https://localhost:18443/range
+  TLS 1.3, cipher suite 0x1303 TLS_CHACHA20_POLY1305_SHA256
+  ticks: connect 1, handshake 1, first byte 1, hop total 0, all 0
+  body: 10 bytes, Content-Length 10, type "application/octet-stream", range "bytes 10-19/1000"
+  idle callbacks: 11
+  first 10 bytes: FMT[bipw~.
+
+(TLS 1.3 off from here on)
+
+[5] GET https://localhost:18446/small
+  result: 5 (certificate rejected)
+  HTTP status 0, redirects 0, final URL https://localhost:18446/small
+  TLS not established
+  errors: macTLS/OT 2012, OT 0, BearSSL 62
+  ticks: connect 1, handshake 0, first byte 0, hop total 1, all 1
+  body: 0 bytes, Content-Length none/0, type ""
+  idle callbacks: 5
+  first 0 bytes: 
+
+Done. 5 URL(s).

@@ -1,0 +1,114 @@
+--- /home/claude/ext/mt/macTLS/os9/ostls_async.c	2026-11-13 22:04:16.077332408 +0000
++++ ostls_async.c	2026-11-13 22:47:27.453314680 +0000
+@@ -23,6 +23,7 @@
+ #include "ostls_tls13_handshake.h"   /* TLS 1.3 state machine (live path) */
+ #include "ostls_tls13_record.h"      /* TLS 1.3 record encrypt/decrypt    */
+ #include "ostls_ticket_cache.h"      /* TLS 1.3 resumption ticket cache   */
++#include "ostls_noverify_x509.h"     /* tls18 PATCH 1: insecure option     */
+ 
+ #include "bearssl_ssl.h"
+ #include "bearssl_x509.h"
+@@ -383,6 +384,8 @@
+     int        br_err;
+     UInt16     cipher_suite;
+     int        resumed;         /* 1 if session ticket was accepted by server */
++    int        insecure;        /* tls18 PATCH 1: config->insecure_skip_verify */
++    ostls_noverify_x509 nv;     /* tls18 PATCH 1: wrapper used when insecure  */
+ 
+     /* ----- Caller-supplied config ----- */
+     char    host[256];
+@@ -650,6 +653,7 @@
+         ? config->handshake_timeout_ticks : OSTLS_DEFAULT_TIMEOUT;
+ 
+     conn->user_refcon = config->user_refcon;
++    conn->insecure = (config->insecure_skip_verify != 0);   /* tls18 PATCH 1 */
+ 
+     conn->connect_phase = kConnectPhase_NeedsOpen;
+     conn->started = false;
+@@ -1004,6 +1008,11 @@
+     }
+     
+     br_x509_minimal_set_time(&conn->xc, br_days, br_seconds);
++    if (conn->insecure) {               /* tls18 PATCH 1 */
++        ostls_noverify_x509_init(&conn->nv, &conn->xc.vtable);
++        br_ssl_engine_set_x509(&conn->sc.eng, &conn->nv.vtable);
++        OSTLS_LogLine("macTLS: INSECURE connection -- certificate not enforced");
++    }
+ 
+     entropy_err = OSTLS_InjectEntropy(&conn->sc.eng);
+     if (entropy_err != 0) {
+@@ -1043,12 +1052,14 @@
+         if (conn->hs13 != NULL) {
+             tls13_handshake_init(conn->hs13);
+             conn->hs13->eng = &conn->sc.eng;
+-            conn->hs13->x509_ctx = (const br_x509_class **)&conn->xc.vtable;
++            conn->hs13->x509_ctx = conn->insecure        /* tls18 PATCH 1 */
++                ? (const br_x509_class **)&conn->nv.vtable
++                : (const br_x509_class **)&conn->xc.vtable;
+             /* macTLS#2 E2: if we hold a live ticket for this host, offer it
+              * so the handshake resumes (skips the cert verify + most of the
+              * ECDHE cost). TickCount() is 60/sec on OS 9. On a miss the
+              * normal full handshake runs. */
+-            {
++            if (!conn->insecure) {      /* tls18 PATCH 1: no ticket offer */
+                 /* uint32_t (NOT UInt32): the cache API takes uint32_t*, and
+                  * CW8 treats unsigned long* (UInt32*) and unsigned int*
+                  * (uint32_t*) as incompatible pointer types. Match exactly. */
+@@ -1086,7 +1097,7 @@
+         int reset_ok;
+ 
+         sess_cache_make_key(conn, key, sizeof key);
+-        if (sess_cache_get(key, &cached)) {
++        if (!conn->insecure && sess_cache_get(key, &cached)) { /* tls18 PATCH 1 */
+             br_ssl_engine_set_session_parameters(&conn->sc.eng, &cached);
+             resume_session = 1;
+             OSTLS_LogLinef("macTLS resume: offering cached session %s", key);
+@@ -1236,9 +1247,14 @@
+          * recent unACKed data), so the win is per cold connection.
+          * Best-effort: failure is non-fatal (Nagle stays on). */
+         {
+-            TOption  opt;
+-            TOptMgmt req;
+-            TOptMgmt ret;
++            /* tls18 PATCH 3: static, not automatic. On an asynchronous
++             * endpoint OTOptionManagement returns at once and OT fills
++             * `ret` (and the option it points at) later, at
++             * T_OPTMGMTCOMPLETE time -- after this block's stack frame
++             * is gone. Static storage keeps that late write harmless. */
++            static TOption  opt;
++            static TOptMgmt req;
++            static TOptMgmt ret;
+ 
+             opt.len      = sizeof opt;
+             opt.level    = INET_TCP;
+@@ -1826,7 +1842,7 @@
+     if (inner == TLS13_CT_HANDSHAKE) {
+         (void)tls13_handle_post_handshake(conn->hs13,
+                                           conn->hs13->plain_buf, plen);
+-        if (conn->hs13->ticket_valid) {
++        if (conn->hs13->ticket_valid && !conn->insecure) { /* tls18 PATCH 1 */
+             OSTLS_TicketCachePut(conn->host, &conn->hs13->ticket,
+                                  (uint32_t)TickCount());
+             conn->hs13->ticket_valid = 0;   /* consumed */
+@@ -2057,7 +2073,8 @@
+         {
+             char key[OSTLS_SESS_KEY_LEN];
+             sess_cache_make_key(conn, key, sizeof key);
+-            sess_cache_put(key, sess);
++            if (!conn->insecure)        /* tls18 PATCH 1 */
++                sess_cache_put(key, sess);
+             OSTLS_LogLinef("macTLS resume: cached session %s (suite 0x%04X)",
+                            key, (unsigned)conn->cipher_suite);
+         }
+@@ -2533,3 +2550,11 @@
+ 
+     return 0;
+ }
++
++/* tls18 PATCH 1 */
++int
++OSTLS_GetIgnoredCertError(OSTLSConnection *conn)
++{
++    if (conn == NULL || !conn->insecure) return -1;
++    return ostls_noverify_x509_ignored_error(&conn->nv);
++}

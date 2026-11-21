@@ -1,0 +1,18 @@
+tls18/mactls -- third-party notices
+
+- macTLS (os9/*, except ostls_noverify_x509.c/.h which are tls18 additions
+  under the same terms): MIT, Copyright (c) 2026 Patrick Britton.
+  See LICENSE-macTLS.txt. Source: https://github.com/mplsllc/macTLS
+  commit 36596d3.
+- BearSSL (bearssl/*): MIT, Copyright (c) 2016 Thomas Pornin.
+  See bearssl/LICENSE.txt and bearssl/UPSTREAM_COMMIT.txt.
+- Certainly (adapted in os9/ostls_tls13_handshake.c, ostls_tls13_keysched.c,
+  ostls_tls13_record.c): MIT, Copyright (c) 2026 Matt Baker.
+  See LICENSE-Certainly.txt.
+- The 121 trust anchors in os9/ostls_b3_anchors.c are certificate data
+  derived from the Mozilla CA certificate bundle (Mozilla NSS root store);
+  they are data, not macTLS code, and remain subject to whatever terms
+  apply to that bundle.
+- The full upstream notice file is kept as THIRD_PARTY_NOTICES.md.
+
+Modifications made in tls18 are listed in ../PATCHES.md.
