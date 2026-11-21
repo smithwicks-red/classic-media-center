@@ -94,6 +94,29 @@ sh mediacenter/test05t/run_test_mcn.sh            # notifier state machine
 sh tls18/host/run_mc05_tests.sh CLIPDIR           # whole app end to end (needs ffmpeg-made clips)
 ```
 
+## AI use notice
+
+**Most of this project was written by an AI.** The source code, tests, build scripts and
+documentation in this repository were written by Claude (Anthropic's AI models), working
+in agentic coding sessions. smithwicks-red directed the work: he set
+the goals and made the design decisions, ran every test on real Mac OS 9 hardware (a Mac
+mini G4) and in his Mac OS 9.2.2 virtual machine, reported what happened, and decided
+what to publish.
+
+What that means for you:
+
+- The code was checked by automated tests on Linux (including AddressSanitizer runs and
+  big-endian PowerPC emulation) and by hands-on testing on real hardware, but it has not
+  had a line-by-line human review. Treat it as you would any young hobby project: it may
+  contain mistakes.
+- The bundled third-party code (macTLS, BearSSL, and the TLS 1.3 code adapted from
+  Certainly) comes from its own upstream authors under the licences listed below; see
+  `tls18/mactls/NOTICES.txt` and `tls18/PATCHES.md` for what was changed here.
+- The project's working notes, including dead ends and mistakes, are kept in the
+  [h264-classic](https://github.com/smithwicks-red/h264-classic) repository's `docs/`.
+
+Bug reports and corrections are very welcome.
+
 ## Licences
 
 - Media Center, mc_proxy, https_client and the host rigs: MIT, see [`LICENSE`](LICENSE).
