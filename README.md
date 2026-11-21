@@ -108,7 +108,7 @@ What that means for you:
 - The code was checked by automated tests on Linux (including AddressSanitizer runs and
   big-endian PowerPC emulation) and by hands-on testing on real hardware, but it has not
   had a line-by-line human review. Treat it as you would any young hobby project: it may
-  contain mistakes.
+  contain mistakes. Such mistakes would be much appreciated in their reporting.
 - The bundled third-party code (macTLS, BearSSL, and the TLS 1.3 code adapted from
   Certainly) comes from its own upstream authors under the licences listed below; see
   `tls18/mactls/NOTICES.txt` and `tls18/PATCHES.md` for what was changed here.
