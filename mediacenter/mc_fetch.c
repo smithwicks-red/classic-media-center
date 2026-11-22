@@ -315,6 +315,7 @@ typedef struct McfReq
     int           disk;
     unsigned long done, total, expect, free_kb, tail_len, need_kb;
     unsigned long last_tick;
+    unsigned long first_tick;     /* (0.6) body began: McfEnv.progress  */
     int           last_pct;
 } McfReq;
 
@@ -802,6 +803,7 @@ static int DlBody(void *ref, const unsigned char *d, unsigned long n)
             }
         }
         q->last_tick = TickCount();
+        q->first_tick = q->last_tick;
         L(e, "  Receiving %lu KB ...\n", q->total / 1024UL);
     }
     if (mcf_walk_feed(q->w, d, n)) return 1;
@@ -818,6 +820,9 @@ static int DlBody(void *ref, const unsigned char *d, unsigned long n)
         sprintf(line, "Downloading: %lu of %lu KB (%d%%). Cmd-period stops.",
                 q->done / 1024UL, q->total / 1024UL, pct);
         if (e->status != NULL) e->status(e->ref, line);
+        /* (0.6) the LCD's bar, KB/s and time left, without parsing text */
+        if (e->progress != NULL)
+            e->progress(e->ref, q->done, q->total, now - q->first_tick);
     }
     if (pct / 10 > q->last_pct / 10)
     {
@@ -1374,6 +1379,9 @@ int mcf_play_file(McfEnv *e, const char *id, McMeta *m, int fi,
     if (checked != 0)
     {
         f->state = checked > 0 ? MC_STATE_PLAYS : MC_STATE_NEWER;
+        /* (0.6) the verdict's note: "may stutter" + orange dot */
+        f->note = (checked > 0 && mc_avc_last_stutter())
+                  ? MC_FILE_NOTE_STUTTER : MC_FILE_NOTE_NONE;
         L(e, "MARK %d %s\n", fi + 1, mc_file_token(f));
     }
     if (r == 0) return 0;

@@ -1,0 +1,36 @@
+FONTLOG for MC Garamond
+=======================
+
+MC Garamond is a MODIFIED VERSION of "EB Garamond 12 Regular" (version 0.016,
+as packaged by Debian, fonts-ebgaramond), designed by Georg A. Duffner with
+Siva Kalyan, released under the SIL Open Font License 1.1 (see OFL.txt).
+The original has no Reserved Font Name; the modified version is nevertheless
+renamed and carries none of the original names in its name table.
+
+It was made for Classic Media Center 0.5 (a Mac OS 9 application) as the bundled
+heading/title face.
+
+Changes (20 Nov 2026), all made with fontforge 20230101 by build_mcgaramond.py,
+then finish_font.py:
+ - Subset to the Mac OS Roman repertoire (216 glyphs + .notdef, .null, CR;
+   215 mapped characters). Everything else removed, including all OpenType
+   layout (GSUB/GPOS: ligatures, alternates, kerning), so only plain
+   character-to-glyph text is supported.
+ - Outlines scaled horizontally to 86% (a condensed Garamond for a 480-px
+   window); advance widths scaled to match; vertical metrics unchanged.
+ - Converted from PostScript (CFF) to TrueType (quadratic) outlines, em size
+   2048, rounded to integer coordinates, auto-hinted (fontforge autoInstr).
+ - Renamed: family "MC Garamond", full name "MC Garamond Regular",
+   PostScript name "MCGaramond-Regular", version 1.0; stray feature-name
+   records removed; copyright line extended (original credits kept).
+ - Packaged as a classic Mac resource fork: 'FOND' 279 "MC Garamond" and
+   'sfnt' 279 (the TrueType font, Apple flavour with Mac name records).
+
+Files
+ MCGaramond-Regular.ttf   the plain TrueType font (for the host mock-up)
+ MC Garamond.rsrc         raw resource fork: FOND 279 + sfnt 279
+ MC Garamond(.rdump/.idump/.r)  DeRez-style text of that fork; type 'FFIL', creator 'DMOV'
+ build_mcgaramond.py, finish_font.py, rsrc_list.py, make_sample.py  how it was made
+
+Not included: Italic (not needed for headings; the build script takes any
+EBGaramond12-*.otf, so it is a one-line change if wanted later).

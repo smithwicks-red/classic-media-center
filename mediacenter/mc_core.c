@@ -1402,6 +1402,14 @@ static const char *mc_chroma_name(int c)
     return "4:2:0 colour";
 }
 
+/* (0.6) the last verdict's "may stutter" (Large for this Mac) */
+static int gLastStutter = 0;
+
+int mc_avc_last_stutter(void)
+{
+    return gLastStutter;
+}
+
 /* (0.4b) Main/High size limits in 16x16 macroblocks */
 #define MC_MH_MB_SMOOTH 1200L   /* 640x480: plays                       */
 #define MC_MH_MB_MAX    1620L   /* 854x480: plays, may stutter; more = -2 */
@@ -1469,6 +1477,7 @@ static int mc_verdict_mainhigh(const McAvcInfo *info, char *line)
         return MC_PLAY_TOO_BIG;
     }
     big = mbs > MC_MH_MB_SMOOTH;
+    gLastStutter = big;           /* (0.6) kept per file by mc_fetch.c */
     if (!info->frame_mbs_only)
     {
         sprintf(line, "%s H.264, level %d.%d, %dx%d, interlaced: untested "
@@ -1494,6 +1503,7 @@ int mc_avc_verdict_at(const McAvcInfo *info, int found, int level,
     char line[200];
     int  r;
 
+    gLastStutter = 0;
     if (found == -2)
     { strcpy(line, "The movie header is damaged."); r = MC_PLAY_UNKNOWN; }
     else if (found != 0)

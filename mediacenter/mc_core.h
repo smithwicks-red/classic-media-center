@@ -199,7 +199,12 @@ typedef struct
     int  width, height;
     int  hint;                /* MC_HINT_*                           */
     int  state;               /* MC_STATE_*                          */
+    int  note;                /* (0.6) MC_FILE_NOTE_*: the verdict's
+                                 per-file note (the list shows "may
+                                 stutter" with an orange dot)          */
 } McFile;
+#define MC_FILE_NOTE_NONE    0
+#define MC_FILE_NOTE_STUTTER 1  /* Main/High larger than 640x480       */
 
 typedef struct
 {
@@ -330,6 +335,10 @@ int  mc_decoder_level(void);
 /* Verdict plus a one-line plain-English reason in msg[msgMax], for the
    decoder level set above. */
 int mc_avc_verdict(const McAvcInfo *info, int found, char *msg, long msgMax);
+/* (0.6) 1 = the last mc_avc_verdict(_at) said "Large for this Mac: it
+   may stutter" (Main/High above 640x480): mc_fetch.c keeps it per file
+   in McFile.note (MC_FILE_NOTE_STUTTER) */
+int mc_avc_last_stutter(void);
 /* (0.4) the same for an explicit level (tests) */
 int mc_avc_verdict_at(const McAvcInfo *info, int found, int level,
                       char *msg, long msgMax);
