@@ -69,6 +69,11 @@ typedef struct McfEnv
                        const unsigned char *moov, long moovLen,
                        unsigned long mediaFrom, char *dref, char *name);
     void  (*proxy_opened)(void *ref, const char *name);
+    /* (0.6) download progress beside the "Downloading: ..." status line
+       (every 30 ticks and at the end): bytes done / total (0 = unknown),
+       ticks since the body began. NULL = none (0.5u, the tests). */
+    void  (*progress)(void *ref, unsigned long done, unsigned long total,
+                      unsigned long ticks);
 
     const char *user_agent;
     int    insecure;          /* "Skip certificate checks (unsafe)"   */

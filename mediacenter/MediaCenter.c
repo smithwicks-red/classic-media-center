@@ -1,5 +1,26 @@
 /*
-    MediaCenter.c -- "Classic Media Center" 0.5u
+    MediaCenter.c -- "Classic Media Center" 0.6
+    0.6 (U3): the skinned window. At Thousands of colours or more (decided
+    once at launch) Media Center opens a fixed 480x360 borderless window
+    (plainDBox: a 1-pixel outline outside the content) whose brushed
+    metal, aqua buttons, list and LCD are painted by mc_skin.c/mc_layout.c
+    into a 32-bit GWorld (temporary memory first, else the app heap), with
+    QuickDraw text runs and ONE TextEdit record (the search field) drawn
+    into the same GWorld, then CopyBits of the dirty rectangles. The
+    behaviour (keys, focus, Quit-twice while streaming, the LCD) lives in
+    the portable controller mc_ui.c (host-tested); this file only turns
+    Toolbox events into its calls and carries out what it asks. Below
+    Thousands of colours, or if the GWorld cannot be had, the 0.5u dialog
+    below runs exactly as before (the functions marked "dispatcher" choose).
+    Menus Apple/File/Edit, About box, Quit = Cmd-Q / File > Quit / the round
+    close button / the Quit Apple event; Esc and Cmd-. never quit. Headings:
+    "Apple Garamond", else "MC Garamond" (FOND+sfnt 279 in this app's own
+    resource fork, MC Garamond.rsrc), else "Hoefler Text", else "Palatino".
+    Debug: Apple event 'MCdb'/'dump' N (0-9 demo scenes, 50 font test,
+    99 the live window) writes "MC dump N" beside the app (GUEST_STEPS_06).
+    Partition 9216 K preferred / 8192 K minimum (as 0.5u).
+
+    ---- 0.5u notes follow ----
     0.5u (J5c): the RAM pre-buffer covers [0, end of moov + 512 KB) (cap
     4 MB, else "index too large to stream" -> download): the first media
     bytes QuickTime waits for lie BEHIND the moov.
@@ -116,7 +137,7 @@
 */
 
 #define H264STREAM_LIBRARY 1
-#define kUserAgent   "ClassicMediaCenter/0.5u (Macintosh; PPC Mac OS 9; QuickTime 6)"
+#define kUserAgent   "ClassicMediaCenter/0.6 (Macintosh; PPC Mac OS 9; QuickTime 6)"
 #define kLogFileName "Media Center Log"
 #include "H264Stream.c"
 #include <Lists.h>
@@ -127,6 +148,15 @@
 #include <AppleEvents.h>      /* (0.5s) close the movie in QuickTime    */
 #include "mc_proxy_ot.h"      /* (0.5s) https streaming: OT listener    */
 #include "mc_stream.h"        /* (0.5s) streaming policy (host-tested)  */
+#include <QDOffscreen.h>      /* (0.6) the skin's 32-bit GWorld         */
+#include <TextEdit.h>
+#include <Menus.h>
+#include <Devices.h>         /* (0.6 guest fix) OpenDeskAcc */
+#include <Fonts.h>
+#include <Resources.h>
+#include <CodeFragments.h>    /* (0.6) font smoothing query, by name    */
+#include "mc_ui.h"            /* (0.6) portable controller (host-tested) */
+#include "mc_demo.h"          /* (0.6) demo scenes, dump header          */
 
 /* ---------------- dialog items ---------------- */
 #define kItemSearch   1      /* default button */
@@ -167,6 +197,24 @@ static int        gQuitAsk = 0;       /* (0.5s) Quit asked (menu/key/button/AE) 
 static int        gStopOn = -1;       /* (0.5s) Stop button state shown */
 static McfEnv     gEnv;
 
+/* (0.6) the skinned window */
+static int        gSkin = 0;          /* 1 = skin, 0 = the 0.5u dialog   */
+static WindowPtr  gWin = NULL;
+static GDHandle   gWinDev = NULL;
+static GWorldPtr  gGW = NULL;
+static TEHandle   gTE = NULL;
+static McCtl      gCtl;
+static int        gHeadNext = 0;      /* next UIStatus = LCD headline    */
+static int        gSuspended = 0;
+static Rect       gCopy;              /* GWorld area still to CopyBits   */
+static short      gCaretWas = -1;
+
+static void SkinFlush(void);
+static void SkinFlash(int w);
+static void SkinFieldText(char *s, long max);
+static int  SkinItemWidget(short item);
+static pascal OSErr AEDump(const AppleEvent *e, AppleEvent *r, long refcon);
+
 #define kQueryFileName "Media Center Query"
 
 /* ==================================================================
@@ -181,6 +229,13 @@ static void UIStatus(const char *line)
     Str255  p;
     GrafPtr save;
 
+    if (gSkin)
+    {   /* (0.6) Tell / CbStatus -> LCD headline, other Say lines -> detail */
+        if (gHeadNext) mcu_status(&gCtl, line);
+        else mcu_detail(&gCtl, line);
+        SkinFlush();
+        return;
+    }
     if (gDlg == NULL) return;
     GetDialogItem(gDlg, kItemStatus, &type, &h, &r);
     CToPStr(line, p);
@@ -195,7 +250,9 @@ static void UIStatus(const char *line)
 /* plain message: to the log and the status line */
 static void Tell(const char *msg)
 {
+    gHeadNext = 1;
     Say("%s\n", msg);
+    gHeadNext = 0;
 }
 
 /* ==================================================================
@@ -217,9 +274,22 @@ static void DrawDefaultRing(void)
 
 static void DoUpdate(WindowPtr w)
 {
-    GrafPtr save;
-    Rect    fr;
+    GrafPtr  save;
+    Rect     fr;
+    CGrafPtr sp;
+    GDHandle sd;
 
+    if (gSkin && w == gWin)
+    {   /* (0.6) everything is in the GWorld: copy it all */
+        GetGWorld(&sp, &sd);
+        SkinFlush();
+        BeginUpdate(w);
+        SetRect(&gCopy, 0, 0, MC_WIN_W, MC_WIN_H);
+        SkinFlush();
+        EndUpdate(w);
+        SetGWorld(sp, sd);
+        return;
+    }
     GetPort(&save);
     SetPort(w);
     BeginUpdate(w);
@@ -321,6 +391,7 @@ static void EnableDlgItem(short item, int on)
     short  type;
     Handle h;
     Rect   r;
+    if (gSkin) return;     /* (0.6) mc_ui_sync derives every state */
     GetDialogItem(gDlg, item, &type, &h, &r);
     HiliteControl((ControlHandle)h, (short)(on ? 0 : 255));
 }
@@ -330,6 +401,8 @@ static int GetCheck(short item)
     short  type;
     Handle h;
     Rect   r;
+    if (gSkin)
+        return item == kItemDlFirst ? gCtl.ui.dl_first : gCtl.ui.insecure;
     GetDialogItem(gDlg, item, &type, &h, &r);
     return GetControlValue((ControlHandle)h) != 0;
 }
@@ -339,6 +412,13 @@ static void SetCheck(short item, int on)
     short  type;
     Handle h;
     Rect   r;
+    if (gSkin)
+    {
+        if (item == kItemDlFirst) mcu_set_options(&gCtl, on, gCtl.ui.insecure);
+        else mcu_set_options(&gCtl, gCtl.ui.dl_first, on);
+        SkinFlush();
+        return;
+    }
     GetDialogItem(gDlg, item, &type, &h, &r);
     SetControlValue((ControlHandle)h, (short)(on ? 1 : 0));
 }
@@ -357,6 +437,7 @@ static void GetTerms(char *s, long max)
     Handle h;
     Rect   r;
     Str255 p;
+    if (gSkin) { SkinFieldText(s, max); return; }
     GetDialogItem(gDlg, kItemTerms, &type, &h, &r);
     GetDialogItemText(h, p);
     if ((long)p[0] > max - 1) p[0] = (unsigned char)(max - 1);
@@ -370,6 +451,7 @@ static void FlashButton(short item)
     Handle        h;
     Rect          r;
     unsigned long t;
+    if (gSkin) { SkinFlash(SkinItemWidget(item)); return; }
     GetDialogItem(gDlg, item, &type, &h, &r);
     HiliteControl((ControlHandle)h, 10);
     Delay(8, &t);
@@ -392,8 +474,22 @@ static void CbLog(void *r, const char *t)
 static void CbStatus(void *r, const char *line)
 {
 #pragma unused(r)
+    gHeadNext = 1;
     UIStatus(line);
+    gHeadNext = 0;
 }
+
+/* (0.6) McfEnv.progress: the LCD's bar, KB/s and time left */
+static void CbProgress(void *r, unsigned long done, unsigned long total,
+                       unsigned long ticks)
+{
+#pragma unused(r)
+    if (!gSkin) return;
+    mcu_progress(&gCtl, done, total, ticks);
+    SkinFlush();
+}
+
+static void SkinBusyEvent(EventRecord *ev);
 
 /* Between pump steps of every transfer: keep the Mac alive, redraw,
    answer Apple events, and watch for Cmd-period / Esc / Stop. */
@@ -405,6 +501,8 @@ static int CbIdle(void *r, int busy)
     (void)mcs_poll();          /* (0.5s) QuickTime is never starved */
     if (WaitNextEvent(everyEvent, &ev, busy ? 0 : 1, NULL))
     {
+        if (gSkin) SkinBusyEvent(&ev);      /* (0.6) */
+        else
         switch (ev.what)
         {
         case kHighLevelEvent:
@@ -448,6 +546,12 @@ static int CbIdle(void *r, int busy)
             }
             break;
         }
+    }
+    if (gSkin)
+    {
+        mcu_set_serving(&gCtl, mcs_streaming());
+        mcu_idle(&gCtl, (unsigned long)TickCount());
+        SkinFlush();
     }
     if (gQuit || gQuitAsk) gCancel = 1;
     return gCancel;
@@ -598,6 +702,7 @@ static void SetupStreaming(void)
 static void UpdateStop(void)
 {
     int on = gBusy || mcs_streaming();
+    if (gSkin) { mcu_set_serving(&gCtl, mcs_streaming()); return; }
     if (on != gStopOn) { EnableDlgItem(kItemStop, on); gStopOn = on; }
 }
 
@@ -607,10 +712,13 @@ static void DoStopStreaming(void)
     if (mcs_streaming()) mcs_stop();
 }
 
-static void DoQuit(void)
+static int DoQuit(void)
 {
+    int r;
     gQuitAsk = 0;
-    if (mcs_quit() == MCS_QUIT_NOW) gQuit = 1;
+    r = mcs_quit();
+    if (r == MCS_QUIT_NOW) gQuit = 1;
+    return r;                  /* (0.6) the controller shows it */
 }
 
 static void SetupEnv(void)
@@ -628,6 +736,7 @@ static void SetupEnv(void)
     gEnv.movie_name = MovieNameFromURL;
     gEnv.proxy_url = mcs_proxy_url;          /* (0.5s) */
     gEnv.proxy_opened = mcs_proxy_opened;
+    gEnv.progress = CbProgress;              /* (0.6) */
     gEnv.user_agent = kUserAgent;
     gEnv.confirm_how = "Click Play again to download it.";
     if (GetAppSpec(&app) == 0)
@@ -709,6 +818,7 @@ static int DecoderLevel(long *version, int *libFound)
 
 static void ClearList(void)
 {
+    if (gSkin) { mcu_show_empty(&gCtl, "No results"); return; }
     if (gList == NULL) return;
     LSetDrawingMode(false, gList);
     LDelRow(0, 0, gList);                 /* 0 rows = delete them all */
@@ -719,6 +829,7 @@ static void ClearList(void)
 static void ListInval(void)
 {
     GrafPtr save;
+    if (gSkin) { SkinFlush(); return; }
     GetPort(&save);
     SetPort(gDlg);
     InvalRect(&gListRect);
@@ -729,6 +840,7 @@ static void SelectRow(int row)
 {
     Cell c;
     if (row < 0) return;
+    if (gSkin) { mc_ui_select(&gCtl.ui, row); mc_ui_sync(&gCtl.ui); return; }
     c.h = 0;
     c.v = (short)row;
     LSetSelect(true, c, gList);
@@ -739,6 +851,13 @@ static void FillResults(int select)
 {
     int  i;
     Cell c;
+    if (gSkin)
+    {
+        mcu_set_confirm(&gCtl, 0);
+        mcu_show_results(&gCtl, &gSearch, gTerms, gPage, select);
+        SkinFlush();
+        return;
+    }
     ClearList();
     LSetDrawingMode(false, gList);
     (void)LAddRow((short)gSearch.count, 0, gList);
@@ -758,6 +877,7 @@ static void SetFileRow(int i)
 {
     char row[200];
     Cell c;
+    if (gSkin) { mcu_update_file(&gCtl, &gMeta, i); return; }
     mc_file_row(&gMeta.files[i], row, (long)sizeof row);
     c.h = 0;
     c.v = (short)i;
@@ -767,6 +887,13 @@ static void SetFileRow(int i)
 static void FillFiles(void)
 {
     int i;
+    if (gSkin)
+    {
+        mcu_set_confirm(&gCtl, 0);
+        mcu_show_files(&gCtl, &gMeta, gSearch.hits[gItem].title, 0);
+        SkinFlush();
+        return;
+    }
     ClearList();
     LSetDrawingMode(false, gList);
     (void)LAddRow((short)gMeta.nfiles, 0, gList);
@@ -837,6 +964,13 @@ static void DoSearch(int nextPage)
 static int SelectedRow(void)
 {
     Cell c;
+    if (gSkin)
+    {
+        int r = mcu_selected(&gCtl);
+        if (gListMode == 0 && r >= gSearch.count) return -1;
+        if (gListMode == 1 && r >= gMeta.nfiles) return -1;
+        return r;
+    }
     c.h = 0;
     c.v = 0;
     if (gList == NULL || !LGetSelect(true, &c, gList)) return -1;
@@ -862,11 +996,13 @@ static void Busy(int on)
     {
         SetCursor(*GetCursor(watchCursor));
         gBusy = 1;
+        if (gSkin) { mcu_set_busy(&gCtl, 1); SkinFlush(); }
         UpdateStop();
     }
     else
     {
         gBusy = 0;
+        if (gSkin) { mcu_set_busy(&gCtl, 0); SkinFlush(); }
         UpdateStop();
         InitCursor();
         FlushEvents(mDownMask | mUpMask | keyDownMask | keyUpMask
@@ -916,9 +1052,9 @@ static void PlayFile(int row)
                        gUrls);
     Busy(0);
     gEnv.confirm_big = 0;
-    LSetDrawingMode(false, gList);
+    if (!gSkin) LSetDrawingMode(false, gList);   /* gList is NULL in skin mode */
     SetFileRow(row);                       /* hint -> fact */
-    LSetDrawingMode(true, gList);
+    if (!gSkin) LSetDrawingMode(true, gList);
     ListInval();
     if (rc == 0)
     {
@@ -927,6 +1063,7 @@ static void PlayFile(int row)
         return;
     }
     if (gEnv.need_confirm) gConfirmRow = row; /* status says "Play again" */
+    if (gSkin) { mcu_set_confirm(&gCtl, gEnv.need_confirm); SkinFlush(); }
     SysBeep(10);
 }
 
@@ -990,6 +1127,997 @@ static void InstallAEHandlers(void)
                                 NewAEEventHandlerUPP(AEIgnore), 0, false);
     (void)AEInstallEventHandler(kCoreEventClass, kAEQuitApplication,
                                 NewAEEventHandlerUPP(AEQuit), 0, false);
+    /* (0.6) debug dumps for the unattended guest run (GUEST_STEPS_06.md) */
+    (void)AEInstallEventHandler('MCdb', 'dump',
+                                NewAEEventHandlerUPP(AEDump), 0, false);
+}
+
+/* ==================================================================
+   (0.6) THE SKIN: the Toolbox layer of the skinned window
+   ==================================================================
+   Pixels: mc_skin.c / mc_layout.c paint into the 32-bit GWorld gGW
+   (xRGB, big-endian, any rowBytes). Text: QuickDraw runs (mc_ui_runs)
+   drawn into the same GWorld, then TextEdit's search field (its inPort
+   IS the GWorld, clipped to the white field interior). SkinFlush copies
+   what changed to the window with CopyBits. Behaviour: mc_ui.c.
+   Port convention: the window is the current port; anything that draws
+   into the GWorld goes through PortGW() ... PortWin(). */
+
+static int  StreamPass(void);
+static void SkinOsEvent(EventRecord *ev);
+
+#define kFieldL 20            /* TextEdit's view: inside the white field */
+#define kFieldT 34
+#define kFieldR 374
+#define kFieldB 50
+#define kFieldMax 255         /* gTerms is 256                           */
+
+static short gFontHead = 0, gFontUI = 1, gFontSmall = 1;
+static short gFontTest[3];    /* MC Garamond, Hoefler Text, Palatino     */
+static short gChainId[4];
+static char  gFontHeadName[40] = "Geneva (no serif found)";
+static short gAppRes = -1;
+static int   gMcgFromApp = 0;
+static McRun gRuns[200];
+static McUi  gDemo;           /* the 'MCdb'/'dump' scenes (12 KB)        */
+static char  gSmooth[64] = "font smoothing: not asked";
+static MenuHandle gMenuApple = NULL, gMenuFile = NULL, gMenuEdit = NULL;
+static unsigned long gLastClick = 0;
+static Point gLastPt;
+
+static const char *const kHeadChain[4] =
+    { "Apple Garamond", "MC Garamond", "Hoefler Text", "Palatino" };
+
+static void PortGW(void)  { SetGWorld(gGW, NULL); }
+static void PortWin(void) { if (gWin != NULL) SetGWorld((CGrafPtr)gWin, gWinDev); }
+
+static void FieldRect(Rect *r) { SetRect(r, kFieldL, kFieldT, kFieldR, kFieldB); }
+
+static void AddCopy(short l, short t, short r, short b)
+{
+    if (l < 0) l = 0;
+    if (t < 0) t = 0;
+    if (r > MC_WIN_W) r = MC_WIN_W;
+    if (b > MC_WIN_H) b = MC_WIN_H;
+    if (r <= l || b <= t) return;
+    if (gCopy.right <= gCopy.left || gCopy.bottom <= gCopy.top)
+        SetRect(&gCopy, l, t, r, b);
+    else
+    {
+        if (l < gCopy.left) gCopy.left = l;
+        if (t < gCopy.top) gCopy.top = t;
+        if (r > gCopy.right) gCopy.right = r;
+        if (b > gCopy.bottom) gCopy.bottom = b;
+    }
+}
+
+static short FontNamed(const char *name)
+{
+    Str255 p;
+    short  id = 0;
+    CToPStr(name, p);
+    GetFNum(p, &id);
+    return id;
+}
+
+/* the heading chain, the UI fonts, and where MC Garamond came from */
+static void SkinFonts(void)
+{
+    int    i;
+    Str255 p;
+    Handle h;
+    gFontHead = 0;
+    for (i = 0; i < 4; i++)
+    {
+        gChainId[i] = FontNamed(kHeadChain[i]);
+        if (gChainId[i] != 0 && gFontHead == 0)
+        {
+            gFontHead = gChainId[i];
+            strcpy(gFontHeadName, kHeadChain[i]);
+        }
+    }
+    if (gFontHead == 0) gFontHead = applFont;
+    gFontTest[0] = gChainId[1];
+    gFontTest[1] = gChainId[2];
+    gFontTest[2] = gChainId[3];
+    gFontUI = FontNamed("Charcoal");
+    if (gFontUI == 0) gFontUI = applFont;
+    gFontSmall = FontNamed("Geneva");
+    if (gFontSmall == 0) gFontSmall = applFont;
+    CToPStr("MC Garamond", p);
+    SetResLoad(false);
+    h = GetNamedResource('FOND', p);
+    SetResLoad(true);
+    gMcgFromApp = (h != NULL && HomeResFile(h) == gAppRes);
+}
+
+/* AppearanceLib's IsAntiAliasedTextEnabled, looked up by name, so no
+   library is added to the project; "unknown" if it is not there. */
+typedef pascal Boolean (*McAAProc)(SInt16 *minSize);
+static void SkinSmoothing(void)
+{
+    CFragConnectionID conn;
+    Ptr               mainAddr, sym;
+    Str255            lib, name, errName;
+    CFragSymbolClass  cls;
+    SInt16            minSize = 0;
+    OSErr             err;
+    CToPStr("AppearanceLib", lib);
+    CToPStr("IsAntiAliasedTextEnabled", name);
+    err = GetSharedLibrary(lib, kPowerPCCFragArch, kFindCFrag, &conn,
+                           &mainAddr, errName);
+    if (err != noErr)
+        err = GetSharedLibrary(lib, kPowerPCCFragArch, kReferenceCFrag, &conn,
+                               &mainAddr, errName);
+    if (err == noErr) err = FindSymbol(conn, name, &sym, &cls);
+    if (err != noErr || sym == NULL)
+    {
+        sprintf(gSmooth, "font smoothing: unknown (err %d)", (int)err);
+        return;
+    }
+    if (((McAAProc)sym)(&minSize))
+        sprintf(gSmooth, "font smoothing: ON at %d pt and up", (int)minSize);
+    else
+        strcpy(gSmooth, "font smoothing: OFF");
+}
+
+static short RoleFont(int role, short *face)
+{
+    *face = 0;
+    switch (role)
+    {
+    case MC_F_TITLE: case MC_F_HEAD: return gFontHead;
+    case MC_F_UIBOLD: *face = bold; return gFontUI;
+    case MC_F_UI: return gFontUI;
+    case MC_F_LCDB: *face = bold; return gFontSmall;
+    case MC_F_TEST_MCG:  return gFontTest[0] ? gFontTest[0] : applFont;
+    case MC_F_TEST_HOEF: return gFontTest[1] ? gFontTest[1] : applFont;
+    case MC_F_TEST_PAL:  return gFontTest[2] ? gFontTest[2] : applFont;
+    default: return gFontSmall;
+    }
+}
+
+/* the text runs of the dirty rect, into the GWorld (port = GWorld) */
+static void SkinDrawRuns(int n, const Rect *dirty)
+{
+    int      i;
+    RGBColor c;
+    for (i = 0; i < n; i++)
+    {
+        const McRun *u = &gRuns[i];
+        Rect   clip, box;
+        char   buf[130];
+        short  len, face, w, x;
+        SetRect(&box, u->box.l, u->box.t, u->box.r, u->box.b + (u->emboss ? 1 : 0));
+        if (!SectRect(&box, dirty, &clip)) continue;
+        ClipRect(&clip);
+        TextFont(RoleFont(u->role, &face));
+        TextSize(u->size);
+        TextFace(face);
+        TextMode(srcOr);
+        len = (short)strlen(u->text);
+        memcpy(buf, u->text, (size_t)len);
+        w = (short)(u->box.r - u->box.l);
+        if (TextWidth(buf, 0, len) > w)
+            (void)TruncText(w, buf, &len, u->trunc == MC_TR_MIDDLE ? truncMiddle : truncEnd);
+        x = u->box.l;
+        if (u->align == MC_AL_CENTER) x = (short)(u->box.l + (w - TextWidth(buf, 0, len)) / 2);
+        if (u->align == MC_AL_RIGHT) x = (short)(u->box.r - TextWidth(buf, 0, len));
+        if (u->emboss)
+        {
+            c.red = c.green = 0xEC00; c.blue = 0xEE00;
+            RGBForeColor(&c);
+            MoveTo(x, (short)(u->base + 1));
+            DrawText(buf, 0, len);
+        }
+        c.red = (unsigned short)(u->rgb[0] * 257);
+        c.green = (unsigned short)(u->rgb[1] * 257);
+        c.blue = (unsigned short)(u->rgb[2] * 257);
+        RGBForeColor(&c);
+        MoveTo(x, u->base);
+        DrawText(buf, 0, len);
+    }
+    c.red = c.green = c.blue = 0;
+    RGBForeColor(&c);
+    TextFace(0);
+}
+
+static void FontTestInfo(char *i1, char *i2)
+{
+    sprintf(i1, "Heading chain -> %s (id %d); MC Garamond id %d%s",
+            gFontHeadName, (int)gFontHead, (int)gChainId[1],
+            gChainId[1] ? (gMcgFromApp ? ", from the app" : ", NOT from the app") : "");
+    sprintf(i2, "Apple Garamond %d, Hoefler Text %d, Palatino %d (0 = none); %s",
+            (int)gChainId[0], (int)gChainId[2], (int)gChainId[3], gSmooth);
+}
+
+/* paint ui (or the font test) inside d into the GWorld */
+static void SkinPaint(const McUi *ui, int fontTest, const McRect *d)
+{
+    PixMapHandle pm = GetGWorldPixMap(gGW);
+    McCanvas     cv;
+    Rect         dr, fr, sect;
+    RGBColor     black = { 0, 0, 0 }, white = { 0xFFFF, 0xFFFF, 0xFFFF };
+    int          n;
+    char         i1[160], i2[200];
+    CGrafPtr     savePort;
+    GDHandle     saveDev;
+
+    GetGWorld(&savePort, &saveDev);
+    if (!LockPixels(pm)) return;
+    mc_canvas_init(&cv, (unsigned char *)GetPixBaseAddr(pm),
+                   (long)((**pm).rowBytes & 0x3FFF), MC_WIN_W, MC_WIN_H);
+    if (fontTest)
+    {
+        mc_demo_font_render(&cv, d);
+        FontTestInfo(i1, i2);
+        n = mc_demo_font_runs(d, i1, i2, gRuns, 200);
+    }
+    else
+    {
+        mc_ui_render(ui, &cv, d);
+        n = mc_ui_runs(ui, d, gRuns, 200);
+    }
+    SetRect(&dr, d->l, d->t, d->r, d->b);
+    PortGW();
+    RGBForeColor(&black);
+    RGBBackColor(&white);
+    SkinDrawRuns(n, &dr);
+    FieldRect(&fr);
+    if (!fontTest && ui == &gCtl.ui && !ui->draw_field_text && gTE != NULL
+        && SectRect(&fr, &dr, &sect))
+    {
+        ClipRect(&fr);
+        TEUpdate(&fr, gTE);
+    }
+    ClipRect(&(**pm).bounds);
+    SetGWorld(savePort, saveDev);
+}
+
+static void SkinCopy(void)
+{
+    RGBColor black = { 0, 0, 0 }, white = { 0xFFFF, 0xFFFF, 0xFFFF };
+    CGrafPtr savePort;
+    GDHandle saveDev;
+    if (gWin == NULL || gCopy.right <= gCopy.left || gCopy.bottom <= gCopy.top) return;
+    GetGWorld(&savePort, &saveDev);
+    PortWin();
+    RGBForeColor(&black);
+    RGBBackColor(&white);
+    CopyBits((BitMap *)*GetGWorldPixMap(gGW), &gWin->portBits,
+             &gCopy, &gCopy, srcCopy, NULL);
+    SetRect(&gCopy, 0, 0, 0, 0);
+    SetGWorld(savePort, saveDev);
+}
+
+static void SkinFlush(void)
+{
+    McRect d;
+    if (!gSkin || gGW == NULL) return;
+    d = gCtl.ui.dirty;
+    if (d.l < 0) d.l = 0;
+    if (d.t < 0) d.t = 0;
+    if (d.r > MC_WIN_W) d.r = MC_WIN_W;
+    if (d.b > MC_WIN_H) d.b = MC_WIN_H;
+    mc_rect_set(&gCtl.ui.dirty, 0, 0, 0, 0);
+    if (d.r > d.l && d.b > d.t)
+    {
+        SkinPaint(&gCtl.ui, 0, &d);
+        AddCopy(d.l, d.t, d.r, d.b);
+    }
+    SkinCopy();
+}
+
+static int SkinItemWidget(short item)
+{
+    switch (item)
+    {
+    case kItemSearch: return W_SEARCH;
+    case kItemPlay:   return W_PLAY;
+    case kItemBack:   return W_BACK;
+    case kItemMore:   return W_MORE;
+    case kItemStop:   return W_STOP;
+    default:          return W_NONE;
+    }
+}
+
+static void SkinFlash(int w)
+{
+    unsigned long t;
+    if (!gSkin || w == W_NONE) return;
+    gCtl.ui.pressed = w;
+    mc_ui_sync(&gCtl.ui);
+    SkinFlush();
+    Delay(8, &t);
+    gCtl.ui.pressed = W_NONE;
+    mc_ui_sync(&gCtl.ui);
+    SkinFlush();
+}
+
+/* ---------------- the search field (TextEdit) ---------------- */
+static void SkinFieldText(char *s, long max)
+{
+    long n = 0;
+    if (gTE != NULL)
+    {
+        n = (**gTE).teLength;
+        if (n > max - 1) n = max - 1;
+        memcpy(s, *(**gTE).hText, (size_t)n);
+    }
+    s[n] = 0;
+}
+
+static void FieldChanged(void)
+{
+    Rect fr;
+    if (gTE == NULL) return;
+    HLock((**gTE).hText);
+    mcu_set_field(&gCtl, *(**gTE).hText, (long)(**gTE).teLength);
+    HUnlock((**gTE).hText);
+    FieldRect(&fr);
+    AddCopy(fr.left, fr.top, fr.right, fr.bottom);
+}
+
+/* TextEdit always draws into the GWorld, clipped to the white field */
+static void TEBegin(void)
+{
+    Rect fr;
+    PortGW();
+    FieldRect(&fr);
+    ClipRect(&fr);
+}
+
+static void TEEnd(void)
+{
+    ClipRect(&(**GetGWorldPixMap(gGW)).bounds);
+    PortWin();
+    FieldChanged();
+}
+
+static void CbTeKey(void *r, int ch, int mods)
+{
+    short s0, s1, len;
+    (void)r; (void)mods;
+    if (gTE == NULL) return;
+    s0 = (**gTE).selStart; s1 = (**gTE).selEnd; len = (**gTE).teLength;
+    TEBegin();
+    if (ch == MC_K_HOME) TESetSelect(0, 0, gTE);
+    else if (ch == MC_K_END) TESetSelect(len, len, gTE);
+    else if (ch == 0x7F)                  /* forward delete */
+    {
+        if (s0 == s1 && s1 < len) TESetSelect(s0, s0 + 1, gTE);
+        TEDelete(gTE);
+    }
+    else if (ch >= 0x20 && len - (s1 - s0) >= kFieldMax) SysBeep(1);
+    else if (ch >= 0x20 || ch == 0x08 || (ch >= MC_K_LEFT && ch <= MC_K_DOWN))
+        TEKey((char)ch, gTE);
+    TEEnd();
+}
+
+static void CbTeEdit(void *r, int act)
+{
+    (void)r;
+    if (gTE == NULL) return;
+    TEBegin();
+    switch (act)
+    {
+    case MC_ACT_CUT:  TECut(gTE);  (void)ZeroScrap(); (void)TEToScrap(); break;
+    case MC_ACT_COPY: TECopy(gTE); (void)ZeroScrap(); (void)TEToScrap(); break;
+    case MC_ACT_PASTE:
+        (void)TEFromScrap();
+        if ((**gTE).teLength - ((**gTE).selEnd - (**gTE).selStart)
+            + TEGetScrapLength() <= kFieldMax) TEPaste(gTE);
+        else SysBeep(1);
+        break;
+    case MC_ACT_SELALL: TESetSelect(0, 32767, gTE); break;
+    }
+    TEEnd();
+}
+
+static void CbTeFocus(void *r, int on)
+{
+    (void)r;
+    if (gTE == NULL) return;
+    TEBegin();
+    if (on) TEActivate(gTE); else TEDeactivate(gTE);
+    TEEnd();
+}
+
+/* while TEClick tracks a drag-selection (it draws into the window port):
+   keep serving; save and restore the port around the poll */
+static pascal Boolean SkinClickLoop(TEPtr te)
+{
+    CGrafPtr p;
+    GDHandle g;
+    (void)te;
+    GetGWorld(&p, &g);
+    (void)mcs_poll();
+    SetGWorld(p, g);
+    return true;
+}
+
+/* ---------------- the controller's requests ---------------- */
+static void CbSearch(void *r, int more) { (void)r; DoSearchBusy(more); }
+static void CbPlay(void *r)   { (void)r; DoPlay(); }
+static void CbBack(void *r)   { (void)r; DoBack(); }
+static void CbCancel(void *r) { (void)r; gConfirmRow = -1; }
+static void CbFlash(void *r, int w) { (void)r; SkinFlash(w); }
+
+/* Stop: during a transfer as 0.5u's CbIdle (cancel; end the stream after
+   it), otherwise as 0.5u's Stop button (DoStopStreaming) */
+static void CbStop(void *r)
+{
+    (void)r;
+    if (gBusy)
+    {
+        gCancel = 1;
+        if (mcs_streaming()) gStopStream = 1;
+    }
+    else DoStopStreaming();
+}
+
+/* Quit: during a transfer as 0.5u's Quit Apple event (cancel, then the
+   loop's DoQuit decides); otherwise DoQuit = mcs_quit's rules */
+static int CbQuit(void *r)
+{
+    (void)r;
+    if (gBusy) { gQuitAsk = 1; return MCU_QUIT_NOW; }
+    return DoQuit();
+}
+
+/* ---------------- About ---------------- */
+/* About (chosen: its own WaitNextEvent loop, not ModalDialog). Every pass
+   does what SkinEventLoop does (same sleep, StreamPass on every event and
+   null event), so QuickTime is never starved; update events go to our
+   window or the dialog; Return/Enter/Esc/Cmd-. press OK; the dialog's own
+   events go through IsDialogEvent/DialogSelect until OK. */
+static void SkinAbout(void)
+{
+    Handle      ditl = NewHandleClear(2);
+    DialogPtr   d;
+    Rect        b, scr = qd.screenBits.bounds;
+    Str255      title;
+    short       item = 0, left, top, hit;
+    EventRecord ev;
+    DialogPtr   dd;
+    int         moved = 0, done = 0, ch;
+    if (ditl == NULL) return;
+    AddItem(ditl, 128, 300, 148, 370, ctrlItem + btnCtrl, "OK");
+    AddItem(ditl,  14,  20,  32, 370, statText, "Classic Media Center 0.6");
+    AddItem(ditl,  36,  20,  52, 370, statText, "by smithwicks-red");
+    AddItem(ditl,  56,  20,  72, 370, statText, "http://smithwicks.freeshell.org");
+    AddItem(ditl,  84,  20, 118, 370, statText,
+            "MC Garamond is based on EB Garamond (SIL Open Font License)");
+    left = (short)((scr.right - scr.left - 390) / 2);
+    top = (short)((scr.bottom - scr.top - 160) / 3);
+    SetRect(&b, left, top, left + 390, top + 160);
+    CToPStr("About Classic Media Center", title);
+    d = NewDialog(NULL, &b, title, true, dBoxProc, (WindowPtr)-1L, false, 0, ditl);
+    if (d == NULL) return;
+    (void)SetDialogDefaultItem(d, 1);
+    (void)item;
+    while (!done && !gQuit)
+    {
+        if (!WaitNextEvent(everyEvent, &ev, mcs_sleep(moved, 15), NULL))
+        {
+            OSTLS_CollectEntropy();
+            moved = StreamPass();
+            continue;
+        }
+        if (ev.what == updateEvt && (WindowPtr)ev.message == (WindowPtr)gWin)
+            DoUpdate(gWin);
+        else if (ev.what == kHighLevelEvent) (void)AEProcessAppleEvent(&ev);
+        else if (ev.what == osEvt) SkinOsEvent(&ev);
+        else if (ev.what == keyDown || ev.what == autoKey)
+        {
+            ch = (int)(ev.message & charCodeMask);
+            if (ch == 13 || ch == 3 || ch == 27
+                || (ch == '.' && (ev.modifiers & cmdKey) != 0))
+                done = 1;
+        }
+        else if (IsDialogEvent(&ev))
+        {
+            if (DialogSelect(&ev, &dd, &hit) && dd == d && hit == 1) done = 1;
+        }
+        moved = StreamPass();
+    }
+    DisposeDialog(d);
+    PortWin();
+}
+
+/* ---------------- menus ---------------- */
+#define kMenuApple 128
+#define kMenuFile  129
+#define kMenuEdit  130
+
+static void SkinMenus(void)
+{
+    Str255 p;
+    p[0] = 1; p[1] = 0x14;                     /* the apple */
+    gMenuApple = NewMenu(kMenuApple, p);
+    CToPStr("About Classic Media Center\311", p); /* MacRoman ellipsis */
+    AppendMenu(gMenuApple, p);
+    CToPStr("(-", p);
+    AppendMenu(gMenuApple, p);
+    AppendResMenu(gMenuApple, 'DRVR');
+    CToPStr("File", p);
+    gMenuFile = NewMenu(kMenuFile, p);
+    CToPStr("Quit/Q", p);
+    AppendMenu(gMenuFile, p);
+    CToPStr("Edit", p);
+    gMenuEdit = NewMenu(kMenuEdit, p);
+    CToPStr("Undo/Z;(-;Cut/X;Copy/C;Paste/V;Clear;Select All/A", p);
+    AppendMenu(gMenuEdit, p);
+    InsertMenu(gMenuApple, 0);
+    InsertMenu(gMenuFile, 0);
+    InsertMenu(gMenuEdit, 0);
+    DrawMenuBar();
+}
+
+static void SkinMenuState(void)
+{
+    short i;
+    int   da = FrontWindow() != gWin;      /* a desk accessory is in front */
+    if (gMenuEdit == NULL) return;
+    if (da) EnableItem(gMenuEdit, 1); else DisableItem(gMenuEdit, 1);
+    for (i = 3; i <= 7; i++)
+        if (da || !gBusy) EnableItem(gMenuEdit, i); else DisableItem(gMenuEdit, i);
+}
+
+static void SkinMenu(long mr)
+{
+    short  menu = (short)(mr >> 16), item = (short)(mr & 0xFFFF);
+    Str255 name;
+    switch (menu)
+    {
+    case kMenuApple:
+        if (item == 1) SkinAbout();
+        else
+        {
+            GetMenuItemText(gMenuApple, item, name);
+            (void)OpenDeskAcc(name);
+            PortWin();
+        }
+        break;
+    case kMenuFile:
+        if (item == 1) (void)mcu_quit(&gCtl);   /* CbQuit -> DoQuit */
+        break;
+    case kMenuEdit:
+        if (SystemEdit((short)(item - 1))) break;
+        if (item == 3) (void)mcu_edit(&gCtl, MC_ACT_CUT);
+        if (item == 4) (void)mcu_edit(&gCtl, MC_ACT_COPY);
+        if (item == 5) (void)mcu_edit(&gCtl, MC_ACT_PASTE);
+        if (item == 7) (void)mcu_edit(&gCtl, MC_ACT_SELALL);
+        if (item == 6 && !gBusy && gTE != NULL) { TEBegin(); TEDelete(gTE); TEEnd(); }
+        break;
+    }
+    HiliteMenu(0);
+    SkinFlush();
+}
+
+/* ---------------- events ---------------- */
+static int Mods(const EventRecord *ev)
+{
+    return ((ev->modifiers & cmdKey) ? MC_MOD_CMD : 0)
+         | ((ev->modifiers & shiftKey) ? MC_MOD_SHIFT : 0);
+}
+
+static void SkinKey(EventRecord *ev)
+{
+    int c = (int)(ev->message & charCodeMask);
+    if (ev->modifiers & cmdKey)
+    {
+        long mr;
+        SkinMenuState();
+        mr = MenuKey((char)c);
+        if ((mr >> 16) != 0) { SkinMenu(mr); return; }
+    }
+    /* Quit: DoQuit (via the controller's cb.quit) sets gQuit itself */
+    (void)mcu_key(&gCtl, c, Mods(ev));
+    SkinFlush();
+}
+
+/* a pressed button: follow the mouse, keep serving, act on release */
+static void SkinTrack(int w)
+{
+    const McRect *k = mc_ui_rect(w);
+    Rect  r;
+    Point pt;
+    int   inside = 1, in;
+    SetRect(&r, k->l, k->t, k->r, k->b);
+    SkinFlush();
+    while (StillDown())
+    {
+        GetMouse(&pt);
+        in = PtInRect(pt, &r);
+        if (in != inside) { inside = in; mcu_track(&gCtl, w, in); SkinFlush(); }
+        (void)mcs_poll();
+    }
+    (void)mcu_release(&gCtl, w, inside);      /* Quit: see CbQuit */
+    SkinFlush();
+}
+
+static void SkinScrollTrack(int part)
+{
+    Point         pt;
+    unsigned long t;
+    GetMouse(&pt);
+    do
+    {
+        (void)mcu_scroll(&gCtl, part, pt.h, pt.v);
+        SkinFlush();
+        Delay(part == MC_PART_UP || part == MC_PART_DOWN ? 3 : 8, &t);
+        (void)mcs_poll();
+        GetMouse(&pt);
+    } while (StillDown());
+}
+
+static void SkinThumbTrack(Point start)
+{
+    Point pt;
+    mcu_thumb_begin(&gCtl, start.v);
+    while (StillDown())
+    {
+        GetMouse(&pt);
+        mcu_thumb_move(&gCtl, pt.v);
+        SkinFlush();
+        (void)mcs_poll();
+    }
+}
+
+static void SkinMouse(EventRecord *ev, int busy)
+{
+    WindowPtr w;
+    short     part = FindWindow(ev->where, &w);
+    Point     pt;
+    Rect      fr;
+    RgnHandle sv;
+    int       r, wid, prt, dbl;
+    if (part == inMenuBar)
+    {
+        if (busy) return;          /* MenuSelect would stop the transfer */
+        SkinMenuState();
+        SkinMenu(MenuSelect(ev->where));
+        return;
+    }
+    if (part == inSysWindow) { if (!busy) SystemClick(ev, w); return; }
+    if (w != gWin || part == inDesk) return;
+    if (w != FrontWindow()) { SelectWindow(w); return; }
+    PortWin();
+    pt = ev->where;
+    GlobalToLocal(&pt);
+    dbl = (unsigned long)ev->when - gLastClick <= (unsigned long)GetDblTime()
+          && pt.h - gLastPt.h < 5 && gLastPt.h - pt.h < 5
+          && pt.v - gLastPt.v < 5 && gLastPt.v - pt.v < 5;
+    gLastClick = (unsigned long)ev->when;
+    gLastPt = pt;
+    r = mcu_click(&gCtl, pt.h, pt.v, Mods(ev), dbl, &wid, &prt);
+    SkinFlush();
+    switch (r)
+    {
+    case MCU_CLICK_DRAG:
+        DragWindow(w, ev->where, &qd.screenBits.bounds);
+        break;
+    case MCU_CLICK_TRACK:
+        SkinTrack(wid);
+        break;
+    case MCU_CLICK_FIELD:
+        if (gTE != NULL)
+        {   /* TEClick tracks with GetMouse = local coordinates of the
+               current port: run it in the window port (the GWorld's
+               bounds start at 0,0 too, so the field rect is the same),
+               clipped to the field, then repaint from the GWorld */
+            FieldRect(&fr);
+            sv = NewRgn();
+            (**gTE).inPort = (GrafPtr)gWin;
+            PortWin();
+            if (sv != NULL) GetClip(sv);
+            ClipRect(&fr);
+            TEClick(pt, (ev->modifiers & shiftKey) != 0, gTE);
+            if (sv != NULL) { SetClip(sv); DisposeRgn(sv); }
+            else ClipRect(&(**GetGWorldPixMap(gGW)).bounds);
+            (**gTE).inPort = (GrafPtr)gGW;
+            mc_ui_dirty(&gCtl.ui, W_FIELD);
+            AddCopy(fr.left, fr.top, fr.right, fr.bottom);
+        }
+        break;
+    case MCU_CLICK_SCROLL:
+        SkinScrollTrack(prt);
+        break;
+    case MCU_CLICK_THUMB:
+        SkinThumbTrack(pt);
+        break;
+    default:
+        break;
+    }
+    SkinFlush();
+}
+
+static void SkinActivate(int on)
+{
+    if (on) (void)TEFromScrap();
+    mcu_activate(&gCtl, on);
+    SkinFlush();
+}
+
+static void SkinOsEvent(EventRecord *ev)
+{
+    if (((ev->message >> 24) & 0xFF) == suspendResumeMessage)
+    {
+        int on = (ev->message & resumeFlag) != 0;
+        gSuspended = !on;
+        SkinActivate(on);
+    }
+}
+
+/* caret blink: TEIdle draws into the GWorld; copy when it changed */
+static void SkinNull(void)
+{
+    Rect fr;
+    if (gTE == NULL || !gCtl.te_on) return;
+    TEBegin();
+    TEIdle(gTE);
+    ClipRect(&(**GetGWorldPixMap(gGW)).bounds);
+    PortWin();
+    if ((**gTE).caretState != gCaretWas)
+    {
+        gCaretWas = (**gTE).caretState;
+        FieldRect(&fr);
+        AddCopy(fr.left, fr.top, fr.right, fr.bottom);
+        SkinCopy();
+    }
+}
+
+/* CbIdle (a transfer is running): only Stop, Quit, Esc/Cmd-., drag,
+   updates and Apple events -- the controller's busy rules decide */
+static void SkinBusyEvent(EventRecord *ev)
+{
+    switch (ev->what)
+    {
+    case kHighLevelEvent: (void)AEProcessAppleEvent(ev); break;
+    case updateEvt:       DoUpdate((WindowPtr)ev->message); break;
+    case activateEvt:     if ((WindowPtr)ev->message == gWin)
+                              SkinActivate((ev->modifiers & activeFlag) != 0);
+                          break;
+    case osEvt:           SkinOsEvent(ev); break;
+    case keyDown:
+    case autoKey:
+        /* Esc / Cmd-. -> CbStop (gCancel); Cmd-Q -> CbQuit (gQuitAsk) */
+        (void)mcu_key(&gCtl, (int)(ev->message & charCodeMask), Mods(ev));
+        break;
+    case mouseDown:       SkinMouse(ev, 1); break;
+    }
+}
+
+static void SkinEventLoop(void)
+{
+    EventRecord ev;
+    int         moved = 0;
+    while (!gQuit)
+    {
+        /* the sleep is 0.5u's: 0 after bytes moved, 1 while QuickTime
+           has connections, else 15 (caret blink too), suspended or not */
+        if (!WaitNextEvent(everyEvent, &ev, mcs_sleep(moved, 15), NULL))
+        {
+            SkinNull();
+            moved = StreamPass();
+            continue;
+        }
+        switch (ev.what)
+        {
+        case kHighLevelEvent: (void)AEProcessAppleEvent(&ev); break;
+        case updateEvt:       DoUpdate((WindowPtr)ev.message); break;
+        case activateEvt:     if ((WindowPtr)ev.message == gWin)
+                                  SkinActivate((ev.modifiers & activeFlag) != 0);
+                              break;
+        case osEvt:           SkinOsEvent(&ev); break;
+        case keyDown:
+        case autoKey:         SkinKey(&ev); break;
+        case mouseDown:       SkinMouse(&ev, 0); break;
+        }
+        moved = StreamPass();
+    }
+}
+
+/* ---------------- the 'MCdb'/'dump' Apple event ---------------- */
+static OSErr WriteDump(int n)
+{
+    PixMapHandle  pm = GetGWorldPixMap(gGW);
+    FSSpec        app, spec;
+    Str255        pname;
+    char          name[32];
+    unsigned char h[MC_DUMP_HDR];
+    long          rb = (long)((**pm).rowBytes & 0x3FFF), cnt, y;
+    short         ref;
+    OSErr         err;
+    Ptr           base;
+
+    if (GetAppSpec(&app) != 0) return fnfErr;
+    sprintf(name, "MC dump %d", n);
+    CToPStr(name, pname);
+    err = FSMakeFSSpec(app.vRefNum, app.parID, pname, &spec);
+    if (err == fnfErr) err = FSpCreate(&spec, (OSType)0x3F3F3F3FUL /* '????' without a trigraph */, 'BINA', smSystemScript);
+    if (err != noErr) return err;
+    err = FSpOpenDF(&spec, fsRdWrPerm, &ref);
+    if (err != noErr) return err;
+    (void)SetEOF(ref, 0);
+    if (!LockPixels(pm)) { FSClose(ref); return memFullErr; }
+    base = GetPixBaseAddr(pm);
+    mc_dump_header(h, MC_WIN_W, MC_WIN_H, rb);
+    cnt = MC_DUMP_HDR;
+    err = FSWrite(ref, &cnt, h);
+    for (y = 0; y < MC_WIN_H && err == noErr; y++)
+    {
+        cnt = rb;
+        err = FSWrite(ref, &cnt, base + y * rb);
+    }
+    FSClose(ref);
+    (void)FlushVol(NULL, app.vRefNum);
+    return err;
+}
+
+static int MakeGWorld(void)
+{
+    Rect  r;
+    OSErr err;
+    SetRect(&r, 0, 0, MC_WIN_W, MC_WIN_H);
+    err = NewGWorld(&gGW, 32, &r, NULL, NULL, useTempMem);
+    if (err != noErr || gGW == NULL)
+    {
+        gGW = NULL;
+        err = NewGWorld(&gGW, 32, &r, NULL, NULL, 0);
+    }
+    if (err != noErr || gGW == NULL) { gGW = NULL; return 0; }
+    (void)LockPixels(GetGWorldPixMap(gGW));
+    return 1;
+}
+
+static OSErr DumpScene(int n)
+{
+    McRect      all;
+    OSErr       err;
+    CGrafPtr    sp;
+    GDHandle    sd;
+    const char *what = mc_demo_name(n);
+    if (what == NULL) return paramErr;
+    if (gGW == NULL && (gSkin || !MakeGWorld())) return memFullErr;
+    if (n == MC_DEMO_LIVE && !gSkin)
+    {
+        Say("DUMP 99: the 0.5u dialog is showing (below Thousands of colours): nothing to dump.\n");
+        return errAEEventNotHandled;
+    }
+    GetGWorld(&sp, &sd);
+    mc_rect_set(&all, 0, 0, MC_WIN_W, MC_WIN_H);
+    if (n == MC_DEMO_LIVE) SkinFlush();
+    else if (n == MC_DEMO_FONTTEST) SkinPaint(NULL, 1, &all);
+    else
+    {
+        (void)mc_demo_scene(n, &gDemo);
+        SkinPaint(&gDemo, 0, &all);
+    }
+    err = WriteDump(n);
+    if (gSkin && n != MC_DEMO_LIVE)
+    {   /* back to the live window */
+        mc_ui_dirty_all(&gCtl.ui);
+        SkinFlush();
+    }
+    SetGWorld(sp, sd);
+    Say("DUMP %d %s -> \"MC dump %d\" err %d; heading font \"%s\" (id %d)%s\n",
+        n, what, n, (int)err, gFontHeadName, (int)gFontHead,
+        gSkin ? "" : " [dialog mode: temporary GWorld]");
+    if (n == MC_DEMO_FONTTEST)
+    {
+        char i1[160], i2[200];
+        FontTestInfo(i1, i2);
+        Say("FONTTEST %s\nFONTTEST %s\n", i1, i2);
+    }
+    return err;
+}
+
+static pascal OSErr AEDump(const AppleEvent *e, AppleEvent *r, long refcon)
+{
+    long     n = -1;
+    DescType t;
+    Size     sz;
+    OSErr    err;
+    (void)r; (void)refcon;
+    err = AEGetParamPtr(e, keyDirectObject, typeLongInteger, &t, &n,
+                        (Size)sizeof n, &sz);
+    if (err != noErr) return err;
+    return DumpScene((int)n);
+}
+
+/* ---------------- open / close ---------------- */
+static int DepthOK(void)
+{
+    GDHandle gd = GetMainDevice();
+    return gd != NULL && (**(**gd).gdPMap).pixelSize >= 16;
+}
+
+/* 1 = the skin is up; 0 = use the 0.5u dialog (logged why) */
+static int SkinOpen(void)
+{
+    static McUiCb cb;
+    Rect   b, scr = qd.screenBits.bounds, dest, view;
+    Str255 title;
+    short  left, top, proc;
+    int    depth = 0;
+    GDHandle gd = GetMainDevice();
+
+    gAppRes = CurResFile();
+    if (gd != NULL) depth = (**(**gd).gdPMap).pixelSize;
+    if (!DepthOK())
+    {
+        Say("Window: the 0.5u dialog (screen at %d bits: the skin needs "
+            "Thousands of colours or more).\n", depth);
+        return 0;
+    }
+    if (!MakeGWorld())
+    {
+        Say("Window: the 0.5u dialog (no memory for the 480x360 GWorld).\n");
+        return 0;
+    }
+    SkinFonts();
+    SkinSmoothing();
+    left = (short)((scr.right - scr.left - MC_WIN_W) / 2);
+    top  = (short)((scr.bottom - scr.top - MC_WIN_H) / 3 + 20);
+    if (top < 44) top = 44;
+    SetRect(&b, left, top, left + MC_WIN_W, top + MC_WIN_H);
+    proc = plainDBox;
+    CToPStr("Classic Media Center", title);
+    gWin = NewCWindow(NULL, &b, title, false, proc, (WindowPtr)-1L, false, 0);
+    if (gWin == NULL)
+    {
+        DisposeGWorld(gGW);
+        gGW = NULL;
+        Say("Window: the 0.5u dialog (NewCWindow failed).\n");
+        return 0;
+    }
+    SetPort(gWin);
+    gWinDev = GetGDevice();
+    SetRect(&gCopy, 0, 0, 0, 0);
+
+    /* the search field: one TextEdit record whose port is the GWorld */
+    PortGW();
+    TextFont(gFontSmall);
+    TextSize(12);
+    TextFace(0);
+    FieldRect(&view);
+    dest = view;
+    dest.right = (short)(dest.left + 3000);   /* one line, never wraps */
+    gTE = TENew(&dest, &view);
+    if (gTE != NULL)
+    {
+        TEAutoView(true, gTE);
+        TESetClickLoop(NewTEClickLoopUPP(SkinClickLoop), gTE);
+    }
+    PortWin();
+
+    cb.search = CbSearch; cb.play = CbPlay; cb.back = CbBack; cb.stop = CbStop;
+    cb.cancel = CbCancel; cb.quit = CbQuit; cb.te_key = CbTeKey;
+    cb.te_edit = CbTeEdit; cb.te_focus = CbTeFocus; cb.flash = CbFlash;
+    cb.options = NULL;
+    mcu_init(&gCtl, &cb);
+    gSkin = 1;
+    SkinMenus();
+    SkinFlush();                     /* paint the GWorld before showing */
+    ShowWindow(gWin);
+    SelectWindow(gWin);
+    Say("Window: skin 480x360 (%d-bit screen, WDEF %d, GWorld rowBytes %d); "
+        "headings \"%s\" (id %d; MC Garamond id %d%s); %s.\n", depth,
+        (int)proc, (int)((**GetGWorldPixMap(gGW)).rowBytes & 0x3FFF),
+        gFontHeadName, (int)gFontHead, (int)gChainId[1],
+        gChainId[1] ? (gMcgFromApp ? " from the app" : " NOT from the app") : "",
+        gSmooth);
+    return 1;
+}
+
+static void SkinClose(void)
+{
+    if (gTE != NULL) { TEDispose(gTE); gTE = NULL; }
+    if (gWin != NULL) { DisposeWindow(gWin); gWin = NULL; }
+    if (gGW != NULL) { DisposeGWorld(gGW); gGW = NULL; }
+    gSkin = 0;
 }
 
 static void DoKey(EventRecord *ev)
@@ -1066,9 +2194,18 @@ static int StreamPass(void)
     int moved = mcs_poll();
     mcs_status_tick();
     if (gStopStream) DoStopStreaming();
-    if (gQuitAsk) DoQuit();
+    if (gQuitAsk)
+    {
+        if (gSkin) { gQuitAsk = 0; (void)mcu_quit(&gCtl); }  /* (0.6) LCD warning */
+        else DoQuit();
+    }
     if (mcs_quit_ready()) gQuit = 1;
     UpdateStop();
+    if (gSkin)
+    {
+        mcu_idle(&gCtl, (unsigned long)TickCount());
+        SkinFlush();
+    }
     return moved;
 }
 
@@ -1079,6 +2216,7 @@ static void EventLoop(void)
     short       item;
     int         moved = 0;
 
+    if (gSkin) { SkinEventLoop(); return; }     /* (0.6) */
     while (!gQuit)
     {
         if (!WaitNextEvent(everyEvent, &ev, mcs_sleep(moved, 15), NULL))
@@ -1192,7 +2330,7 @@ int main(void)
     FlushEvents(everyEvent, 0);
     InstallAEHandlers();
     OpenLog();                  /* truncates the old log (see the diff) */
-    Say("Classic Media Center 0.5u -- Internet Archive films in "
+    Say("Classic Media Center 0.6 -- Internet Archive films in "
         "QuickTime Player 6. https via macTLS (BearSSL), streamed through "
         "a local proxy.\n");
     {
@@ -1214,6 +2352,10 @@ int main(void)
     SetupEnv();
     SetupStreaming();          /* (0.5s) */
 
+    /* (0.6) the skin at Thousands of colours or more, else 0.5u's dialog */
+    gSkin = SkinOpen();
+    if (!gSkin)
+    {
     gDlg = MakeDialog();
     if (gDlg == NULL) { Say("No dialog.\n"); SysBeep(10); return 1; }
     SetPort(gDlg);
@@ -1224,6 +2366,7 @@ int main(void)
     EnableDlgItem(kItemStop, 0);
     EnableDlgItem(kItemBack, 0);
     SelectDialogItemText(gDlg, kItemTerms, 0, 32767);
+    }
     gHook = ReadQueryFile(&gHookSpec);
     if (gHook) HookRun();
     else
@@ -1233,10 +2376,14 @@ int main(void)
         EventLoop();
     }
 
+    if (gSkin) SkinClose();
+    else
+    {
     LDispose(gList);
     gList = NULL;
     DisposeDialog(gDlg);
     gDlg = NULL;
+    }
     mcs_shutdown();            /* (0.5s) listener, connections, upstreams */
     Say("Exit.\n");
     OSTLS_SaveSeed();

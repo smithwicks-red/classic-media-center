@@ -2,3 +2,5 @@ build-*/
 *.o
 __pycache__/
 host_work*/
+out/
+mediacenter/fixtures/gen/
