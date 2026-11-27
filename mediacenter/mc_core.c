@@ -693,6 +693,37 @@ static void meta_add_server(McMeta *m, const char *s, long len, int cut)
     mc_copy(m->server[m->nsrv++], s, MC_SRVMAX);
 }
 
+/* (0.6.1) same-film key: hash of the name without its extension and
+   without IA's derivative suffixes ".ia" / "_512kb" (case-blind), so
+   "x.avi", "x.ia.mp4" and "x_512kb.mp4" share one key */
+static unsigned long mc_stem_key(const char *name)
+{
+    const char *s = name, *dot = NULL, *p;
+    long n, i;
+    unsigned long h = 2166136261UL;
+
+    for (p = name; *p; p++)
+    {
+        if (*p == '/') { s = p + 1; dot = NULL; }
+        else if (*p == '.') dot = p;
+    }
+    n = dot != NULL && dot != s ? (long)(dot - name) : (long)strlen(name);
+    if (n >= 3 && name[n - 3] == '.' && (name[n - 2] | 32) == 'i'
+        && (name[n - 1] | 32) == 'a')
+        n -= 3;
+    else if (n >= 6 && name[n - 6] == '_' && name[n - 5] == '5'
+             && name[n - 4] == '1' && name[n - 3] == '2'
+             && (name[n - 2] | 32) == 'k' && (name[n - 1] | 32) == 'b')
+        n -= 6;
+    for (i = 0; i < n; i++)
+    {
+        unsigned char c = (unsigned char)name[i];
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
+        h = ((h ^ c) * 16777619UL) & 0xFFFFFFFFUL;
+    }
+    return h ? h : 1UL;
+}
+
 /* (0.3) every .mp4/.m4v/.mov goes into the file list, natural order */
 static void meta_add_file(McMeta *m)
 {
@@ -719,6 +750,8 @@ static void meta_add_file(McMeta *m)
     f->height = c->height;
     f->hint = mc_format_hint(c->format);
     f->state = MC_STATE_HINT;
+    f->skey = mc_stem_key(c->name);                       /* (0.6.1) */
+    f->key = m->tmpOrig ? m->tmpOrig : f->skey;
     m->nfiles++;
 }
 
@@ -763,6 +796,7 @@ static void meta_cb(void *user, const McJson *j, int kind,
         memset(&m->tmp, 0, sizeof(m->tmp));
         m->tmpTitle[0] = 0;
         m->tmpBad = 0;
+        m->tmpOrig = 0;
         return;
     }
     if (kind == MC_J_OBJ_END && js_at(j, 3, "files", NULL)
@@ -784,6 +818,9 @@ static void meta_cb(void *user, const McJson *j, int kind,
             mc_copy(m->tmp.format, val, MC_FMTMAX);
         else if (kind == MC_J_STR && strcmp(k, "title") == 0)
             mc_copy(m->tmpTitle, val, MC_TITLEMAX);
+        else if (kind == MC_J_STR && strcmp(k, "original") == 0
+                 && !j->truncated)
+            m->tmpOrig = mc_stem_key(val);            /* (0.6.1) */
         else if (strcmp(k, "size") == 0)
             m->tmp.size = mc_atoul(val);
         else if (strcmp(k, "width") == 0)
@@ -1343,6 +1380,95 @@ static int mc_walk(const unsigned char *b, long off, long end,
     return 0;
 }
 
+/* (0.6.1) one trak's timing: hdlr type, mdhd timescale/duration, stts
+   sample count, ctts present */
+typedef struct
+{
+    int vide;
+    unsigned long scale, dur, samples;
+    int ctts;
+} McTrakT;
+
+static void mc_trak_t(const unsigned char *b, long off, long end,
+                      McTrakT *t, int depth)
+{
+    long hdr, size, p, n;
+    unsigned long cnt, i;
+
+    if (depth > 8) return;
+    while (off < end)
+    {
+        if (mc_box(b, off, end, &hdr, &size) != 0) return;
+        p = off + hdr;
+        n = size - hdr;
+        if (mc_is(b + off + 4, "mdia") || mc_is(b + off + 4, "minf")
+            || mc_is(b + off + 4, "stbl"))
+            mc_trak_t(b, p, off + size, t, depth + 1);
+        else if (mc_is(b + off + 4, "hdlr") && n >= 12)
+            { if (mc_is(b + p + 8, "vide")) t->vide = 1; }
+        else if (mc_is(b + off + 4, "mdhd") && n >= 24)
+        {
+            if (b[p] == 1)
+            {
+                if (n >= 36 && mc_rd32(b + p + 24) == 0)
+                {
+                    t->scale = mc_rd32(b + p + 20);
+                    t->dur = mc_rd32(b + p + 28);
+                }
+            }
+            else
+            {
+                t->scale = mc_rd32(b + p + 12);
+                t->dur = mc_rd32(b + p + 16);
+            }
+        }
+        else if (mc_is(b + off + 4, "stts") && n >= 8)
+        {
+            cnt = mc_rd32(b + p + 4);
+            t->samples = 0;
+            for (i = 0; i < cnt && 8L + (long)i * 8L + 8L <= n; i++)
+                t->samples += mc_rd32(b + p + 8 + (long)i * 8L);
+        }
+        else if (mc_is(b + off + 4, "ctts"))
+            t->ctts = 1;
+        off += size;
+    }
+}
+
+static void mc_timing(const unsigned char *b, long off, long end,
+                      McAvcInfo *info)
+{
+    long hdr, size;
+    McTrakT t;
+
+    while (off < end)
+    {
+        if (mc_box(b, off, end, &hdr, &size) != 0) return;
+        if (mc_is(b + off + 4, "trak"))
+        {
+            memset(&t, 0, sizeof t);
+            mc_trak_t(b, off + hdr, off + size, &t, 0);
+            if (t.vide)
+            {
+                if (t.scale != 0 && t.dur != 0)
+                {
+                    double sec = (double)t.dur / (double)t.scale;
+                    info->dur_ms = (unsigned long)(sec * 1000.0);
+                    if (t.samples > 1 && sec > 0.0)
+                    {
+                        double f = (double)t.samples * 100.0 / sec;
+                        if (f >= 100.0 && f <= 12000.0)   /* 1..120 fps */
+                            info->fps100 = (long)(f + 0.5);
+                    }
+                }
+                info->bframes = t.ctts;
+                return;
+            }
+        }
+        off += size;
+    }
+}
+
 int mc_avc_profile(const unsigned char *moov, long len, McAvcInfo *info)
 {
     long hdr, size;
@@ -1357,6 +1483,7 @@ int mc_avc_profile(const unsigned char *moov, long len, McAvcInfo *info)
     if (!mc_is(moov + 4, "moov")) return -2;
     r = mc_walk(moov, hdr, size, info, 0);
     if (r < 0) return -2;
+    if (r == 1) mc_timing(moov, hdr, size, info);         /* (0.6.1) */
     return r == 1 ? 0 : -1;
 }
 
@@ -1402,12 +1529,142 @@ static const char *mc_chroma_name(int c)
     return "4:2:0 colour";
 }
 
-/* (0.6) the last verdict's "may stutter" (Large for this Mac) */
+/* (0.6) the last verdict's "may stutter" (Large for this Mac);
+   (0.6.1) MC_FILE_NOTE_*: also the G3 budget's STUTTER / HEAVY */
 static int gLastStutter = 0;
 
 int mc_avc_last_stutter(void)
 {
+    return gLastStutter != MC_FILE_NOTE_NONE;
+}
+
+int mc_avc_last_note(void)
+{
     return gLastStutter;
+}
+
+/* ------------------------------------------------------------------
+   (0.6.1) G3 policy (constants: mc_core.h)
+   ------------------------------------------------------------------ */
+static int  mc_g3 = 0;
+static long mc_mhz = 0;
+
+void mc_set_cpu(int g3, long mhz)
+{
+    mc_g3 = g3 != 0;
+    mc_mhz = (mhz >= 100L && mhz <= 5000L) ? mhz : 0L;
+}
+
+int mc_cpu_g3(void)
+{
+    return mc_g3;
+}
+
+long mc_cpu_mhz(void)
+{
+    if (mc_mhz == 0 && mc_g3) return MC_G3_MHZ_UNKNOWN;
+    return mc_mhz;
+}
+
+unsigned long mc_mbs100(int w, int h, long fps100)
+{
+    unsigned long mb;
+    if (w <= 0 || h <= 0) return 0;
+    if (fps100 <= 0) fps100 = MC_G3_FPS_UNKNOWN * 100L;
+    mb = ((unsigned long)w + 15UL) / 16UL * (((unsigned long)h + 15UL) / 16UL);
+    return mb * (unsigned long)fps100;
+}
+
+int mc_g3_verdict(long mhz, int w, int h, long fps100, int pclass,
+                  int bframes, long *pct)
+{
+    double need, budget, p;
+
+    if (mhz <= 0) mhz = MC_G3_MHZ_UNKNOWN;
+    need = (double)mc_mbs100(w, h, fps100) / 100.0;
+    if (bframes) need = need * (double)MC_G3_BFRAME_PCT / 100.0;
+    budget = (double)mhz * (double)(pclass == MC_PCLASS_BASE
+                                    ? MC_G3_MBS_PER_MHZ_BASE
+                                    : MC_G3_MBS_PER_MHZ_MAIN);
+    p = need * 100.0 / budget;
+    if (pct != NULL) *pct = (long)(p + 0.5);
+    if (p <= (double)MC_G3_PLAYS_PCT) return MC_G3_PLAYS;
+    if (p <= (double)MC_G3_STUTTER_PCT) return MC_G3_STUTTER;
+    return MC_G3_HEAVY;
+}
+
+static int mc_is_512kb(const McFile *f)
+{
+    return strcmp(f->format, "512Kb MPEG4") == 0;
+}
+
+int mc_g3_lighter(const McMeta *m, int fi, long mhz)
+{
+    const McFile *f, *g;
+    int  i, best = -1, mp4 = -1;
+    unsigned long fmb, gmb, bestmb = 0;
+    int  fw, fh;
+
+    if (m == NULL || fi < 0 || fi >= m->nfiles) return -1;
+    f = &m->files[fi];
+    if (mc_is_512kb(f)) return -1;                /* already the light one */
+    fw = f->width;
+    fh = f->height;
+    fmb = (fw > 0 && fh > 0) ? mc_mbs100(fw, fh, 100L) : 0xFFFFFFFFUL;
+    for (i = 0; i < m->nfiles; i++)
+    {
+        if (i == fi) continue;
+        g = &m->files[i];
+        if (!(g->key == f->key || g->key == f->skey || g->skey == f->key))
+            continue;                             /* another film */
+        if (g->state == MC_STATE_NEWER) continue; /* known not to play */
+        if (mc_is_512kb(g))
+        {
+            if (mp4 < 0) mp4 = i;
+            continue;
+        }
+        if (!mc_startsi(g->format, "h.264") || g->width <= 0
+            || g->height <= 0)
+            continue;
+        gmb = mc_mbs100(g->width, g->height, 100L);
+        if (gmb >= fmb) continue;                 /* not lighter */
+        if (mc_g3_verdict(mhz, g->width, g->height, 0L, MC_PCLASS_MAIN, 0,
+                          NULL) != MC_G3_PLAYS)
+            continue;
+        if (best < 0 || gmb > bestmb) { best = i; bestmb = gmb; }
+    }
+    return best >= 0 ? best : mp4;
+}
+
+/* (0.6.1) a G3 sentence for an H.264 verdict line; sets gLastStutter */
+static void mc_g3_line(const McAvcInfo *info, char *line)
+{
+    long mhz = mc_cpu_mhz(), pct;
+    int  v, pc = info->profile == 66 ? MC_PCLASS_BASE : MC_PCLASS_MAIN;
+    char t[120];
+
+    v = mc_g3_verdict(mhz, info->width, info->height, info->fps100, pc,
+                      info->bframes, &pct);
+    if (info->fps100 > 0)
+        sprintf(t, " G3 %ld MHz: %ld.%02ld fps%s, %ld%% of budget",
+                mhz, info->fps100 / 100L, info->fps100 % 100L,
+                info->bframes ? "+B" : "", pct);
+    else
+        sprintf(t, " G3 %ld MHz: fps unknown (30 assumed)%s, %ld%% of "
+                "budget", mhz, info->bframes ? "+B" : "", pct);
+    if (strlen(line) + strlen(t) + 30 < 320) strcat(line, t);
+    if (v == MC_G3_HEAVY)
+    {
+        if (strlen(line) + 30 < 320) strcat(line, ": too heavy (G3).");
+        gLastStutter = MC_FILE_NOTE_HEAVY;
+    }
+    else if (v == MC_G3_STUTTER)
+    {
+        if (strlen(line) + 30 < 320) strcat(line, ": may stutter.");
+        if (gLastStutter < MC_FILE_NOTE_STUTTER)
+            gLastStutter = MC_FILE_NOTE_STUTTER;
+    }
+    else if (strlen(line) + 2 < 320) strcat(line, ": plays.");
 }
 
 /* (0.4b) Main/High size limits in 16x16 macroblocks */
@@ -1477,7 +1734,8 @@ static int mc_verdict_mainhigh(const McAvcInfo *info, char *line)
         return MC_PLAY_TOO_BIG;
     }
     big = mbs > MC_MH_MB_SMOOTH;
-    gLastStutter = big;           /* (0.6) kept per file by mc_fetch.c */
+    gLastStutter = big ? MC_FILE_NOTE_STUTTER : MC_FILE_NOTE_NONE;
+                                  /* (0.6) kept per file by mc_fetch.c */
     if (!info->frame_mbs_only)
     {
         sprintf(line, "%s H.264, level %d.%d, %dx%d, interlaced: untested "
@@ -1500,7 +1758,7 @@ int mc_avc_verdict(const McAvcInfo *info, int found, char *msg, long msgMax)
 int mc_avc_verdict_at(const McAvcInfo *info, int found, int level,
                       char *msg, long msgMax)
 {
-    char line[200];
+    char line[320];
     int  r;
 
     gLastStutter = 0;
@@ -1555,6 +1813,11 @@ int mc_avc_verdict_at(const McAvcInfo *info, int found, int level,
                 info->codec);
         r = MC_PLAY_UNKNOWN;
     }
+    /* (0.6.1) a G3 also gets its decode budget (any H.264 that plays) */
+    if (mc_g3 && (r == MC_PLAY_OK || r == MC_PLAY_UNTESTED)
+        && (mc_is((const unsigned char *)info->codec, "avc1")
+            || mc_is((const unsigned char *)info->codec, "avc3")))
+        mc_g3_line(info, line);
     if (msg != NULL && msgMax > 0) mc_copy(msg, line, msgMax);
     return r;
 }

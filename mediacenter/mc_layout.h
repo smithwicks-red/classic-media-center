@@ -43,6 +43,7 @@ enum
 /* per-file notes (McRow.note): the mark and dot are derived from them */
 #define MC_NOTE_NONE    0
 #define MC_NOTE_STUTTER 1           /* orange dot + "may stutter"      */
+#define MC_NOTE_HEAVY   2           /* (0.6.1) G3: orange dot + "too heavy" */
 
 #define MC_ROW_H     16
 #define MC_LIST_ROWS 10
@@ -68,6 +69,7 @@ enum
 #define MC_F_TEST_MCG  7 /* "MC Garamond" by name, whatever the chain says */
 #define MC_F_TEST_HOEF 8 /* "Hoefler Text"                             */
 #define MC_F_TEST_PAL  9 /* "Palatino"                                 */
+#define MC_F_BTN       10 /* (0.6.1) button labels: Charcoal (system font), plain */
 
 #define MC_AL_LEFT   0
 #define MC_AL_CENTER 1

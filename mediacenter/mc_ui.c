@@ -502,6 +502,7 @@ void mcu_status(McCtl *c, const char *line)
             if (prefix(p, " KB/s, ")) p += 7;
         }
         else if (prefix(p, "idle, ")) { cpy(r, "idle", sizeof r); p += 6; }
+        else if (prefix(p, "buffered, ")) { cpy(r, "buffered", sizeof r); p += 10; }   /* (0.6.1) */
         {
             char rest[120];
             cpy(rest, p, sizeof rest);
@@ -526,11 +527,28 @@ void mcu_status(McCtl *c, const char *line)
     swap_out(c, sw);
 }
 
+/* (0.6.1) lines that belong in the log file only: the LCD's detail line
+   shows user-facing status. (0.6 showed "FONTTEST ..." there.) */
+static int is_log_only(const char *line)
+{
+    static const char *const kLogOnly[] = {
+        "proxy:", "FONTTEST", "DUMP ", "MARK ", "STREAMING ", "STOP:", "HOOK:",
+        "QUIT:", "SEARCH ", "GET ", "POST ", "Window:", "CPU type", "Event loop",
+        "Film average", "  HTTP", "  box ", "  Apple event", "  30",
+        "NET:", "FILE ", "FILES ", "HOOK query", "CONFIRM needed", "Trying ",
+        "G3 ", NULL
+    };
+    int i;
+    for (i = 0; kLogOnly[i] != NULL; i++)
+        if (prefix(line, kLogOnly[i])) return 1;
+    return 0;
+}
+
 void mcu_detail(McCtl *c, const char *line)
 {
     int sw;
     sniff_host(c, line);
-    if (line[0] == 0 || prefix(line, "proxy:")) return;
+    if (line[0] == 0 || is_log_only(line)) return;
     if (c->lcd_mode != MCU_LCD_PLAIN) return;   /* owned by the gauge */
     sw = swap_in(c);
     cpy(c->ui.lcd_detail, line, sizeof c->ui.lcd_detail);
@@ -639,8 +657,9 @@ static void file_row(McRow *r, const McFile *f)
     sprintf(r->size, "%.10s MB", mb);
     cpy(r->mark, mc_file_mark(f), sizeof r->mark);
     r->dot = (unsigned char)mcu_file_dot(f);
-    r->note = (unsigned char)(f->note == MC_FILE_NOTE_STUTTER ? MC_NOTE_STUTTER
-                                                             : MC_NOTE_NONE);
+    r->note = (unsigned char)(f->note == MC_FILE_NOTE_HEAVY ? MC_NOTE_HEAVY
+                              : f->note == MC_FILE_NOTE_STUTTER ? MC_NOTE_STUTTER
+                              : MC_NOTE_NONE);
 }
 
 void mcu_show_files(McCtl *c, const McMeta *m, const char *title, int sel)

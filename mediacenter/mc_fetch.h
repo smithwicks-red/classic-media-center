@@ -68,6 +68,9 @@ typedef struct McfEnv
     int   (*proxy_url)(void *ref, const char *httpsUrl, unsigned long size,
                        const unsigned char *moov, long moovLen,
                        unsigned long mediaFrom, char *dref, char *name);
+       /* (0.6.1) proxy_url may also return -3: the pre-buffer measured
+          the network below the film's rate (mc_net_download): Play
+          downloads first instead (the usual big-download confirm) */
     void  (*proxy_opened)(void *ref, const char *name);
     /* (0.6) download progress beside the "Downloading: ..." status line
        (every 30 ticks and at the end): bytes done / total (0 = unknown),
@@ -96,6 +99,10 @@ typedef struct McfEnv
     int    need_confirm;      /* set when MCF_ERR_CONFIRM stopped Play */
     unsigned long confirm_size;
     int    search_scope;      /* MC_SCOPE_* that page 1 used           */
+    /* (0.6.1) G3: a short sentence for the LCD after Play ("G3: playing
+       the 320x240 MPEG-4 version."), "" = none. Set by mcf_play_file /
+       mcf_play_item; the app shows it instead of the plain "Opened" */
+    char   g3note[96];
 } McfEnv;
 
 typedef struct McfProbe

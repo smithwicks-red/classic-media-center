@@ -1,0 +1,8 @@
+{"server":"ia800100.us.archive.org","dir":"/1/items/g3h264","metadata":{"title":"G3 h264"},
+ "files":[
+  {"name":"film.mkv","source":"original","format":"Matroska","size":"900000000"},
+  {"name":"film.ia.mp4","source":"derivative","format":"h.264 IA","original":"film.mkv","size":"400000000","width":"640","height":"480"},
+  {"name":"film.mp4","source":"derivative","format":"h.264","original":"film.mkv","size":"200000000","width":"480","height":"360"},
+  {"name":"film_small.mp4","source":"derivative","format":"h.264","original":"film.mkv","size":"90000000","width":"320","height":"240"},
+  {"name":"film_nosize.mp4","source":"derivative","format":"h.264","original":"film.mkv","size":"90000000"}
+ ]}

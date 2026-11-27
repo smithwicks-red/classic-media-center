@@ -30,6 +30,8 @@ def font(key, px):
     return _cache[k], xs
 
 def role_font(role, serif):
+    if role == 10:
+        return "UI"   # MC_F_BTN: Charcoal stand-in
     if role in (0, 1, 7):
         return serif
     if role in (8, 9):

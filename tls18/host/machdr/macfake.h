@@ -66,7 +66,7 @@ OSErr PBHSetVolSync(WDPBRec *pb);
    Universal Interfaces 3.4.1, only the fields Media Center uses. */
 enum { dupFNErr = -48, dirNFErr = -120, dskFulErr = -34, ioDirMask = 0x10 };
 typedef struct { StringPtr ioNamePtr; short ioVRefNum; short ioFDirIndex; SInt8 ioFlAttrib; long ioDrDirID; } DirInfo;
-typedef struct { StringPtr ioNamePtr; short ioVRefNum; short ioFDirIndex; SInt8 ioFlAttrib; long ioDirID; long ioFlLgLen; } HFileInfo;
+typedef struct { StringPtr ioNamePtr; short ioVRefNum; short ioFDirIndex; SInt8 ioFlAttrib; long ioDirID; long ioFlLgLen; long ioFlRLgLen; } HFileInfo;
 typedef union { HFileInfo hFileInfo; DirInfo dirInfo; } CInfoPBRec;
 typedef CInfoPBRec *CInfoPBPtr;
 OSErr PBGetCatInfoSync(CInfoPBPtr pb);

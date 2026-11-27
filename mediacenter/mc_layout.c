@@ -260,15 +260,23 @@ int mc_ui_hit(const McUi *ui, int x, int y, int *part, int *row)
 /* ---------------- notes -> dot and mark ---------------- */
 int mc_ui_row_dot(const McRow *r)
 {
-    if (r->note == MC_NOTE_STUTTER && r->dot != MC_DOT_NO && r->dot != MC_DOT_NO_GUESS)
+    if ((r->note == MC_NOTE_STUTTER || r->note == MC_NOTE_HEAVY)
+        && r->dot != MC_DOT_NO && r->dot != MC_DOT_NO_GUESS)
         return MC_DOT_WARN;
     return r->dot;
 }
 
+/* (0.6.1) the mark column is 64 px of Geneva 10: "may not play?" and
+   "needs newer decoder?" were cut to "may not pl..." on the guest */
 const char *mc_ui_row_mark(const McRow *r)
 {
+    if (r->note == MC_NOTE_HEAVY && r->dot != MC_DOT_NO && r->dot != MC_DOT_NO_GUESS)
+        return "too heavy";   /* (0.6.1) G3 only; "too heavy (G3)" (14) would be cut like "may not play?" (13) */
     if (r->note == MC_NOTE_STUTTER && r->dot != MC_DOT_NO && r->dot != MC_DOT_NO_GUESS)
         return "may stutter";
+    if (strcmp(r->mark, "may not play?") == 0) return "may fail?";
+    if (strcmp(r->mark, "needs newer decoder?") == 0) return "old decoder?";
+    if (strcmp(r->mark, "needs newer decoder") == 0) return "old decoder";
     return r->mark;
 }
 
@@ -563,7 +571,7 @@ int mc_ui_runs(const McUi *ui, const McRect *clip, McRun *out, int max)
             run(&R, kLabels[w], k->l + 18, k->t, k->r, k->b, k->t + 11, MC_F_UI, 11,
                 MC_AL_LEFT, v, v, v, en);
         else
-            run(&R, kLabels[w], k->l + 4, k->t, k->r - 4, k->b, k->t + 16, MC_F_UI, 12,
+            run(&R, kLabels[w], k->l + 4, k->t, k->r - 4, k->b, k->t + 16, MC_F_BTN, 12,
                 MC_AL_CENTER, v, v, v, 0);
     }
 

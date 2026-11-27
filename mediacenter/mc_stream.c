@@ -23,8 +23,14 @@ static unsigned long gQuitWarnT = 0;
 static int           gHook = 0;
 static unsigned long gHookServe = 0, gHookStop = 0;   /* deadlines (ticks) */
 static int           gInsecure = 0;
-static unsigned long gRateT = 0, gRateBytes = 0, gKBs = 0;
+static unsigned long gRateT = 0, gKBs = 0;
+/* (0.6.1) rate = bytes over the last MCS_RATE_N seconds (ring of samples
+   taken every MCS_STATUS_EVERY ticks), not over the last second alone:
+   QuickTime fetches in bursts and then rests while its buffer is full */
+static unsigned long gRt[MCS_RATE_N + 1], gRb[MCS_RATE_N + 1];
+static int           gRn = 0;
 static char          gLastStatus[160];
+static char          gSaved[MCS_NAME_MAX + 1];   /* (0.6.1) real saved name */
 
 static unsigned long Now(void)
 {
@@ -61,8 +67,10 @@ void mcs_init(const McsEnv *env)
     gNMovies = 0;
     gStopping = gQuitAfterStop = gQuitReady = gHook = 0;
     gQuitWarnT = gHookServe = gHookStop = 0;
-    gRateT = gRateBytes = gKBs = 0;
+    gRateT = gKBs = 0;
+    gRn = 0;
     gLastStatus[0] = 0;
+    gSaved[0] = 0;
 }
 
 void mcs_set_insecure(int on) { gInsecure = on; }
@@ -95,6 +103,65 @@ void mcs_mc_name(char *name)
     if (n == 0) { strcpy(name, "film"); n = 4; }
     name[n] = 0;
     strcat(name, kTail);
+}
+
+/* (0.6.1) "x (MC).mov" is one of OUR reference movies */
+int mcs_is_mc_name(const char *name)
+{
+    static const char kTail[] = " (MC).mov";
+    unsigned long n = (unsigned long)strlen(name), k = sizeof kTail - 1;
+    return n > k && LowerEq(name + n - k, kTail);
+}
+
+/* (0.6.1) the name for try number attempt (1 = name itself, 2.. = a
+   number before our " (MC)" tail and ".mov": "x 2 (MC).mov"), at most 31
+   chars. The 0.5u/0.6 loop cut the END of the name, which turned
+   "... (MC).mov" into "... (M 2.mov". Same name rule as the Finder's. */
+void mcs_try_name(const char *name, int attempt, char *out)
+{
+    char          num[12], base[MCS_NAME_MAX + 1];
+    const char   *tail = "";
+    unsigned long n = (unsigned long)strlen(name), room;
+    if (attempt < 2)
+    {
+        if (n > MCS_NAME_MAX) n = MCS_NAME_MAX;
+        memcpy(out, name, (size_t)n);
+        out[n] = 0;
+        return;
+    }
+    if (n >= 4 && LowerEq(name + n - 4, ".mov")) n -= 4;
+    if (n >= 5 && strncmp(name + n - 5, " (MC)", 5) == 0)
+    {
+        n -= 5;
+        tail = " (MC)";
+    }
+    sprintf(num, " %d", attempt);
+    room = MCS_NAME_MAX - 4UL - strlen(tail) - strlen(num);
+    if (n > room) n = room;
+    memcpy(base, name, (size_t)n);
+    while (n > 0 && (base[n - 1] == ' ' || base[n - 1] == '.')) n--;
+    base[n] = 0;
+    sprintf(out, "%s%s%s.mov", base, num, tail);
+}
+
+/* (0.6.1) is a movie of this name being streamed right now? (its file
+   must not be rewritten then) */
+int mcs_movie_in_use(const char *name)
+{
+    int i;
+    if (!mcs_streaming()) return 0;
+    for (i = 0; i < gNMovies; i++)
+        if (LowerEq(gMovie[i], name)) return 1;
+    return 0;
+}
+
+/* (0.6.1) the file's real name, when open_ref saved it under another one
+   than asked for; mcs_proxy_opened records and logs THIS one, so the
+   Apple event of Stop/Quit names the window that really exists */
+void mcs_saved_as(const char *actual)
+{
+    strncpy(gSaved, actual, MCS_NAME_MAX);
+    gSaved[MCS_NAME_MAX] = 0;
 }
 
 static unsigned long Be32(const unsigned char *p)
@@ -171,17 +238,35 @@ static int Prebuffer(const char *target, unsigned long want)
     return r;
 }
 
+/* (0.6.1) the last pre-buffer: bytes and ticks (network rate) */
+static unsigned long gPreGot = 0, gPreTicks = 0;
+
+int mcs_net_download(unsigned long bytes, unsigned long ticks,
+                     unsigned long film_kbs, long margin_pct,
+                     unsigned long *net_kbs)
+{
+    double kbs;
+    if (net_kbs != NULL) *net_kbs = 0;
+    if (bytes < MCS_NET_MIN_BYTES || ticks < MCS_NET_MIN_TICKS) return 0;
+    kbs = (double)bytes / 1024.0 * 60.0 / (double)ticks;
+    if (net_kbs != NULL) *net_kbs = (unsigned long)kbs;
+    if (film_kbs == 0) return 0;
+    if (margin_pct <= 0) margin_pct = MCS_STREAM_MARGIN_PCT;
+    return kbs * 100.0 < (double)film_kbs * (double)margin_pct;
+}
+
 static int Prebuffer1(const char *target, unsigned long need)
 {
-    unsigned long t0 = Now(), got = 0, want = 0, total = 0, pct, last = 999;
+    unsigned long tw = Now(), t0, got = 0, want = 0, total = 0, pct, last = 999;
     int  r;
     char t[160];
+    gPreGot = gPreTicks = 0;
     if (target == NULL) return -1;
     for (;;)
     {
         r = mcpo_prebuf_start(target, need);
         if (r != 1) break;
-        if (Now() - t0 > MCS_PREBUF_WAIT)
+        if (Now() - tw > MCS_PREBUF_WAIT)
         {
             Log("proxy: the previous film's pre-buffer is still being sent.\n");
             return -1;
@@ -189,6 +274,9 @@ static int Prebuffer1(const char *target, unsigned long need)
         if (PreIdle()) return -2;
     }
     if (r < 0) return -1;
+    /* (0.6.1 F1) the rate timer starts after the wait for the previous
+       pre-buffer, so that wait is not counted as slow link */
+    t0 = Now();
     Status("Buffering 0%");
     for (;;)
     {
@@ -210,8 +298,10 @@ static int Prebuffer1(const char *target, unsigned long need)
         }
     }
     if (r < 0) return -1;
+    gPreGot = got;
+    gPreTicks = Now() - t0;
     sprintf(t, "Buffered the first %lu KB of %lu KB in %lu ticks.\n",
-            got / 1024UL, total / 1024UL, Now() - t0);
+            got / 1024UL, total / 1024UL, gPreTicks);
     Log(t);
     Status("Buffering 100%");
     return 0;
@@ -225,7 +315,8 @@ int mcs_proxy_url(void *ref, const char *httpsUrl, unsigned long size,
     char           tok[9], t[300];
     unsigned short port = 0, uport = 0;
     int            tls = 0, defport, r;
-    unsigned long  kbs, lim, base, cap, want;
+    unsigned long  kbs, lim, base, cap, want, net;
+    int            dl;
     const char    *fname;
     (void)ref;
 
@@ -291,14 +382,39 @@ int mcs_proxy_url(void *ref, const char *httpsUrl, unsigned long size,
                 gE.cpu_g3 ? "G3" : "not a G3");
         Log(t);
     }
-    if (gE.cpu_g3 && kbs > lim)
+    /* (0.6.1) stream vs download, decided HERE: right after the
+       pre-buffer (its bytes/ticks are the only network measurement we
+       get before QuickTime opens the reference movie) and before the
+       reference movie exists, so -3 costs no second moov fetch: the
+       caller downloads with the moov it holds (mc_fetch.c TryCand). The
+       pre-buffered RAM is dropped; the download starts at byte 0. */
+    dl = mcs_net_download(gPreGot, gPreTicks, kbs, gE.stream_margin,
+                          &net);
+    if (net != 0)
     {
-        sprintf(t, "G3 HINT: this film averages %lu KB/s; on a G3 it may "
-                "stutter while streaming. If it does, tick \"Download "
-                "first\" and Play it again.", kbs);
+        sprintf(t, "NET: pre-buffer %lu KB/s, film %lu KB/s (need x%ld.%02ld): "
+                "%s.\n", net, kbs, (gE.stream_margin > 0 ? gE.stream_margin
+                : MCS_STREAM_MARGIN_PCT) / 100L, (gE.stream_margin > 0
+                ? gE.stream_margin : MCS_STREAM_MARGIN_PCT) % 100L,
+                dl ? "too slow to stream" : "fast enough");
+        Log(t);
+    }
+    if (gE.cpu_g3 && dl && gE.stream_margin >= 0)
+    {
+        mcpo_prebuf_cancel();
+        return -3;
+    }
+    if (gE.cpu_g3 && kbs > lim)
+    {   /* (0.6.1) honest: Download first cures a slow NETWORK only; the
+           network was measured (or not judged) above, so any jerkiness
+           left is the G3 decoding */
+        sprintf(t, "G3 HINT: this film averages %lu KB/s%s. Jerky video "
+                "on a G3 is the CPU decoding, not the network: Download "
+                "first will not fix it; a smaller file will.", kbs,
+                net ? " and the network keeps up" : "");
         Log(t);
         Log("\n");
-        Status(t);
+        Status("G3 HINT: jerky video = CPU; try a smaller file.");
     }
     return 0;
 }
@@ -308,7 +424,8 @@ void mcs_proxy_opened(void *ref, const char *name)
     int  i;
     char t[120];
     (void)ref;
-    for (i = 0; i < gNMovies; i++) if (strcmp(gMovie[i], name) == 0) break;
+    if (gSaved[0] != 0) name = gSaved;   /* (0.6.1) the name really saved */
+    for (i = 0; i < gNMovies; i++) if (LowerEq(gMovie[i], name)) break;
     if (i == gNMovies)
     {
         if (gNMovies == MCS_MAX_MOVIES)
@@ -323,6 +440,8 @@ void mcs_proxy_opened(void *ref, const char *name)
     sprintf(t, "STREAMING \"%.31s\" via 127.0.0.1:%u (Stop ends it).\n", name,
             (unsigned)mcpo_port());
     Log(t);
+    gSaved[0] = 0;
+    mcs_rate_reset();   /* (0.6.1) a new film: a new rate window */
 }
 
 /* ------------------------------------------------------------------ */
@@ -358,6 +477,7 @@ static void FinishStop(const char *why)
             mcpo_active(), mcpo_parked());
     Log(t);
     mcpo_cancel_all();
+    mcs_rate_reset();
     gNMovies = 0;
     gStopping = 0;
     Status("Streaming stopped.");
@@ -457,6 +577,36 @@ int mcs_poll(void)
     return moved;
 }
 
+/* (0.6.1) one sample (time in ticks, total bytes sent so far) -> KB/s
+   over the samples kept (the last MCS_RATE_N intervals) */
+unsigned long mcs_rate_feed(unsigned long t, unsigned long bytes)
+{
+    int           i;
+    unsigned long dt, db;
+    if (gRn == MCS_RATE_N + 1)
+    {
+        for (i = 1; i < gRn; i++) { gRt[i - 1] = gRt[i]; gRb[i - 1] = gRb[i]; }
+        gRn--;
+    }
+    gRt[gRn] = t; gRb[gRn] = bytes; gRn++;
+    gKBs = 0;
+    if (gRn >= 2)
+    {
+        dt = gRt[gRn - 1] - gRt[0];
+        db = gRb[gRn - 1] - gRb[0];
+        if (dt != 0) gKBs = (db / 1024UL) * 60UL / dt;
+    }
+    return gKBs;
+}
+
+/* (0.6.1) forget the samples (a new stream, or none) */
+void mcs_rate_reset(void)
+{
+    gRn = 0;
+    gKBs = 0;
+    gRateT = 0;
+}
+
 void mcs_status_text(char *out, unsigned long cap)
 {
     const McpStats *st;
@@ -467,7 +617,14 @@ void mcs_status_text(char *out, unsigned long cap)
     st = mcp_stats(mcpo_server());
     b = st->bytes_out;
     mb10 = b / (1024UL * 1024UL / 10UL);
-    if (n > 0)
+    if (n > 0 && gRn >= 2 && gRb[gRn - 1] == gRb[0])
+        /* (0.6.1) nothing went out for the whole window while QuickTime
+           holds the connection: it is not fetching (buffer full), which
+           is not "0 KB/s of a slow link" */
+        sprintf(t, "Streaming via secure proxy: buffered, %lu.%lu MB sent, "
+                "%d connection%s.", mb10 / 10UL, mb10 % 10UL, n,
+                n == 1 ? "" : "s");
+    else if (n > 0)
         sprintf(t, "Streaming via secure proxy: %lu KB/s, %lu.%lu MB sent, "
                 "%d connection%s.", gKBs, mb10 / 10UL, mb10 % 10UL, n,
                 n == 1 ? "" : "s");
@@ -482,16 +639,17 @@ void mcs_status_text(char *out, unsigned long cap)
    transfers, which own the status line then) */
 void mcs_status_tick(void)
 {
-    unsigned long t = Now(), dt, b;
+    unsigned long t = Now();
     char          s[200];
     if (!mcpo_is_open() || gStopping) return;
     if (gRateT != 0 && t - gRateT < MCS_STATUS_EVERY) return;
-    b = mcp_stats(mcpo_server())->bytes_out;
-    dt = gRateT != 0 ? t - gRateT : 0;
-    gKBs = dt != 0 ? ((b - gRateBytes) / 1024UL) * 60UL / dt : 0;
+    if (!mcs_streaming())
+    {
+        gRn = 0; gKBs = 0; gRateT = t;
+        return;
+    }
+    (void)mcs_rate_feed(t, mcp_stats(mcpo_server())->bytes_out);
     gRateT = t;
-    gRateBytes = b;
-    if (!mcs_streaming()) return;
     mcs_status_text(s, sizeof s);
     if (strcmp(s, gLastStatus) != 0) Status(s);
 }

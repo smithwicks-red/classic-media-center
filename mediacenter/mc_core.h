@@ -202,9 +202,15 @@ typedef struct
     int  note;                /* (0.6) MC_FILE_NOTE_*: the verdict's
                                  per-file note (the list shows "may
                                  stutter" with an orange dot)          */
+    unsigned long key;        /* (0.6.1) mc_film_key: same film = same
+                                 key (IA "original" stem, else own stem) */
+    unsigned long skey;       /* (0.6.1) hash of the file's own stem    */
 } McFile;
 #define MC_FILE_NOTE_NONE    0
-#define MC_FILE_NOTE_STUTTER 1  /* Main/High larger than 640x480       */
+#define MC_FILE_NOTE_STUTTER 1  /* Main/High larger than 640x480, or
+                                   (0.6.1) G3: near its decode budget  */
+#define MC_FILE_NOTE_HEAVY   2  /* (0.6.1) G3: well over its budget:
+                                   the list says "too heavy (G3)"      */
 
 typedef struct
 {
@@ -224,6 +230,7 @@ typedef struct
     /* private */
     McCand tmp;
     char   tmpTitle[MC_TITLEMAX];
+    unsigned long tmpOrig;     /* (0.6.1) key of the file's "original" */
     int    tmpBad;
     int    titleSeen;
     McJson j;
@@ -305,6 +312,10 @@ typedef struct
     int  depth_luma;      /* bit depth, 8 = normal                     */
     int  depth_chroma;
     int  frame_mbs_only;  /* 0 = interlaced coding (fields / MBAFF)    */
+    /* (0.6.1 G3) from the VIDEO trak (hdlr 'vide'): mdhd + stts + ctts */
+    long fps100;          /* frames per second x 100; 0 = unknown      */
+    unsigned long dur_ms; /* video track duration in ms; 0 = unknown   */
+    int  bframes;         /* 1 = a ctts box: frames reordered (B-frames) */
 } McAvcInfo;
 
 /* moov = the whole 'moov' box, header included (as FetchMoov gives).
@@ -339,6 +350,62 @@ int mc_avc_verdict(const McAvcInfo *info, int found, char *msg, long msgMax);
    may stutter" (Main/High above 640x480): mc_fetch.c keeps it per file
    in McFile.note (MC_FILE_NOTE_STUTTER) */
 int mc_avc_last_stutter(void);
+/* (0.6.1) MC_FILE_NOTE_* of the last verdict (STUTTER or HEAVY) */
+int mc_avc_last_note(void);
+
+/* ==================================================================
+   (0.6.1) G3 POLICY. Decoder 17d = FFmpeg 0.8 (AVCDecLib), scalar on a
+   G3, AltiVec on a G4. A G3 is judged by decode WORK, in 16x16
+   macroblocks per second:  MBs/s = ceil(w/16) * ceil(h/16) * fps
+   (fps unknown -> MC_G3_FPS_UNKNOWN = 30, said in the verdict text).
+   Budget = MHz * MC_G3_MBS_PER_MHZ_{BASE,MAIN}; B-frames cost
+   MC_G3_BFRAME_PCT % of that work.
+     need <= budget * MC_G3_PLAYS_PCT / 100    plays
+     need <= budget * MC_G3_STUTTER_PCT / 100  may stutter
+     more                                      too heavy for this G3
+   Data behind the values (BUILD_NOTES_061.md "G3 policy" says which
+   Pismo measurement retunes which constant):
+   - Pismo 500 MHz, h264bsd v13, 320x240 Baseline: 29.4 fps Thousands,
+     21.6 fps Millions (paint 3.4 ms vs 24 ms per frame).
+   - Stage-3 FFmpeg-scalar estimates, Pismo 500: 480x360 Main 38-53
+     ms/frame (690 MB -> ~15,200 MB/s = 30/MHz), 640x480 Baseline
+     50-70 ms (1200 MB -> ~20,000 MB/s = 40/MHz), 640x480 Main 70-100+.
+   - Mac mini G4 1.25 GHz (AltiVec): 640x480 High+B 15.6 ms/frame.
+   A G4 or an unknown CPU keeps the 0.4b size rule only.
+   ================================================================== */
+#define MC_G3_MBS_PER_MHZ_BASE  40L   /* Baseline: MB/s per MHz, decode only */
+#define MC_G3_MBS_PER_MHZ_MAIN  30L   /* Main/High (CABAC)                   */
+#define MC_G3_BFRAME_PCT       110L   /* B-frames: work x 1.10               */
+#define MC_G3_PLAYS_PCT         75L   /* 25% left for paint, sound, network  */
+#define MC_G3_STUTTER_PCT      125L   /* up to here: drops some frames       */
+#define MC_G3_FPS_UNKNOWN       30L   /* no usable mdhd/stts: assume 30 fps  */
+#define MC_G3_MHZ_UNKNOWN      400L   /* Gestalt gave no clock: slow Pismo   */
+#define MC_G3_MPEG4_W          320    /* a "512Kb MPEG4" without width/height */
+#define MC_G3_MPEG4_H          240
+/* stream vs download: MCS_STREAM_MARGIN_PCT, MCS_NET_MIN_* in
+   mc_stream.h (mcs_net_download), part of the same policy */
+
+#define MC_G3_PLAYS    0
+#define MC_G3_STUTTER  1
+#define MC_G3_HEAVY    2
+#define MC_PCLASS_BASE 0              /* Baseline (CAVLC, no B)              */
+#define MC_PCLASS_MAIN 1              /* Main/High                           */
+
+/* the CPU, set once by the app (MediaCenter.c CpuFacts; host: MC_CPU_G3,
+   MC_CPU_MHZ). Default: not a G3 -> every rule as in 0.6 */
+void mc_set_cpu(int g3, long mhz);
+int  mc_cpu_g3(void);
+long mc_cpu_mhz(void);                 /* MC_G3_MHZ_UNKNOWN if 0 on a G3 */
+/* MBs/s x 100 for w x h at fps100 (0 -> MC_G3_FPS_UNKNOWN) */
+unsigned long mc_mbs100(int w, int h, long fps100);
+/* MC_G3_*; pct (may be NULL) = need as % of the budget */
+int  mc_g3_verdict(long mhz, int w, int h, long fps100, int pclass,
+                   int bframes, long *pct);
+/* (0.6.1) a lighter rendition of file fi of the same film for a G3:
+   the largest sibling H.264 whose metadata size plays at 30 fps Main,
+   else a "512Kb MPEG4" sibling; -1 = none. Siblings share mc_film_key */
+int  mc_g3_lighter(const McMeta *m, int fi, long mhz);
+
 /* (0.4) the same for an explicit level (tests) */
 int mc_avc_verdict_at(const McAvcInfo *info, int found, int level,
                       char *msg, long msgMax);

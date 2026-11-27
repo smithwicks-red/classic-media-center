@@ -244,7 +244,8 @@ static void t_files(void)
     STR("  mark", mc_ui_row_mark(r), "may stutter");
     r = &C.ui.rows[3];
     EQ("will-not-play + stutter: stays red", mc_ui_row_dot(r), MC_DOT_NO);
-    STR("  mark", mc_ui_row_mark(r), "needs newer decoder");
+    STR("  mark", mc_ui_row_mark(r), "old decoder");
+    STR("  (0.6.1) may-not-play guess fits the 64 px column", (r->mark[0] = 0, strcpy(r->mark, "may not play?"), mc_ui_row_mark(r)), "may fail?");
     EQ("guess row: hollow green", mc_ui_row_dot(&C.ui.rows[0]), MC_DOT_OK_GUESS);
     EQ("newer-decoder guess: hollow red", mc_ui_row_dot(&C.ui.rows[4]), MC_DOT_NO_GUESS);
     STR("row text = label", C.ui.rows[0].text, "1x01 - Episode 1");
@@ -355,6 +356,39 @@ static void t_stream(void)
     STR("  KB/s right", C.ui.lcd_right, "212 KB/s");
     STR("  detail", C.ui.lcd_detail, "dn721300.ca.archive.org (https) \xE1 12.3 MB sent, 1 connection.");
     EQ("  no bar", C.ui.progress, -1);
+    /* (0.6.1) QuickTime not fetching: "buffered", not "0 KB/s" */
+    mcu_status(&C, "Streaming via secure proxy: buffered, 146.2 MB sent, 1 connection.");
+    STR("buffered: right", C.ui.lcd_right, "buffered");
+    STR("  detail", C.ui.lcd_detail, "dn721300.ca.archive.org (https) \xE1 146.2 MB sent, 1 connection.");
+    STR("  head unchanged", C.ui.lcd_head, "Streaming to QuickTime Player.");
+    /* (0.6.1) debug/log lines never reach the LCD detail line */
+    mcu_status(&C, "Plain message.");
+    mcu_detail(&C, "Pick one and click Play.");
+    STR("user-facing line shown", C.ui.lcd_detail, "Pick one and click Play.");
+    mcu_detail(&C, "FONTTEST Heading chain -> MC Garamond (id 279); MC Garamond id 279, from the app");
+    mcu_detail(&C, "proxy: proxy #2: adopted the parked upstream at 2277945 (skip 0)");
+    mcu_detail(&C, "STREAMING \"x (MC).mov\" via 127.0.0.1:8080 (Stop ends it).");
+    mcu_detail(&C, "STOP: asked QuickTime Player to close \"x (MC).mov\" (saving no) -> 0");
+    mcu_detail(&C, "DUMP 99 live -> \"MC dump 99\" err 0");
+    mcu_detail(&C, "MARK 27 fact:plays-now");
+    mcu_detail(&C, "  Apple event to QuickTime Player: close window \"x\" saving no -> 0 / 0");
+    mcu_detail(&C, "  HTTP 200, TLS 1.3, 434 bytes, 47 ticks");
+    mcu_detail(&C, "Window: skin 480x360 (32-bit screen); font smoothing: n/a.");
+    /* (0.6.1 F1) the fetch / pre-buffer / G3 log lines */
+    mcu_detail(&C, "NET: pre-buffer 97 KB/s, film 93 KB/s (need x1.25): download first");
+    mcu_detail(&C, "FILE 2 mp4 mb=45.1 fmt=h264 name=x.mp4 label=480p");
+    mcu_detail(&C, "FILES 3 someid");
+    mcu_detail(&C, "HOOK query=popeye +download");
+    mcu_detail(&C, "CONFIRM needed: 300.0 MB, about 55 min at 97 KB/s");
+    mcu_detail(&C, "Trying x.mp4 (mp4, 4000 KB)");
+    mcu_detail(&C, "G3 400 MHz: file 3 a.mp4; playing file 2 (b.mp4) instead.");
+    mcu_detail(&C, "G3 HINT: this film averages 120 KB/s. Jerky video on a G3");
+    STR("  debug lines left it alone", C.ui.lcd_detail, "Pick one and click Play.");
+    /* the user-facing G3 note goes through the status path, not the detail filter */
+    mcu_status(&C, "G3: playing the 320x240 version.");
+    STR("  G3 note shown on the LCD head", C.ui.lcd_head, "G3: playing the 320x240 version.");
+    mcu_status(&C, "Streaming via secure proxy: buffered, 1.0 MB sent, 1 connection.");
+    mcu_status(&C, "Streaming via secure proxy: 212 KB/s, 12.3 MB sent, 1 connection.");
     EQ("serving (not busy): Esc -> BACK (film keeps playing), not quit", key(MC_K_ESC), MC_ACT_BACK);
     EQ("serving (not busy): Cmd-. -> BACK, not quit", cmd('.'), MC_ACT_BACK);
     EQ("  quit() never called", A.quit, 0);

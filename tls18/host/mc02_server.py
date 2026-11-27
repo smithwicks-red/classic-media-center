@@ -175,7 +175,11 @@ def serve(port, cert):
     if cert:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(os.path.join(CERTDIR, cert + '.pem'), os.path.join(CERTDIR, cert + '.key'))
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        # (0.6.1) handshake in the handler thread, not in the single accept loop:
+        # a client that connects and stalls (or is cancelled mid-handshake)
+        # blocked every later connection, which the proxy saw as
+        # "502 upstream closed before its head" (host flake, base too)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 
