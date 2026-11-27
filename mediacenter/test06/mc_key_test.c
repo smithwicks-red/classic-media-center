@@ -168,6 +168,13 @@ int main(void)
     row.dot = MC_DOT_NO; strcpy(row.mark, "will not play");
     EXPECT("stutter never overrides will-not-play (dot)", mc_ui_row_dot(&row), MC_DOT_NO);
     EXPECT("stutter never overrides will-not-play (mark)", strcmp(mc_ui_row_mark(&row), "will not play"), 0);
+    /* (0.6.1) G3 "too heavy" note */
+    row.note = MC_NOTE_HEAVY;
+    EXPECT("heavy never overrides will-not-play (mark)", strcmp(mc_ui_row_mark(&row), "will not play"), 0);
+    row.dot = MC_DOT_OK; strcpy(row.mark, "PLAYS NOW");
+    EXPECT("heavy note: orange dot", mc_ui_row_dot(&row), MC_DOT_WARN);
+    EXPECT("heavy note: mark", strcmp(mc_ui_row_mark(&row), "too heavy"), 0);
+    EXPECT("heavy mark <= 11 chars (64 px column)", strlen(mc_ui_row_mark(&row)) <= 11, 1);
 
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;

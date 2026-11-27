@@ -1,0 +1,6 @@
+{"server":"ia800100.us.archive.org","dir":"/1/items/g3none","metadata":{"title":"G3 none"},
+ "files":[
+  {"name":"ep1.mp4","source":"original","format":"h.264","size":"400000000","width":"640","height":"480"},
+  {"name":"ep2_512kb.mp4","source":"derivative","format":"512Kb MPEG4","original":"ep2.mp4","size":"90000000"},
+  {"name":"ep2.mp4","source":"original","format":"h.264","size":"400000000","width":"640","height":"480"}
+ ]}

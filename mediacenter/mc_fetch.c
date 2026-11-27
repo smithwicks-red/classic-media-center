@@ -1134,7 +1134,7 @@ static int Fail(McfEnv *e, const char *msg)
    already called). */
 static int TryCand(McfEnv *e, const char *id, McMeta *m, const McCand *c,
                    char urls[][MC_URLMAX], char *refusal, int *sawHttps,
-                   int *checked)
+                   int *checked, int g3probe)
 {
     char           why[200], name[64];
     char           dl[MC_URLMAX + 16];
@@ -1181,6 +1181,12 @@ static int TryCand(McfEnv *e, const char *id, McMeta *m, const McCand *c,
             return 1;
         }
         *checked = 1;
+        /* (0.6.1) G3: a heavy file may have a lighter sibling: ask first */
+        if (g3probe && mc_avc_last_note() != MC_FILE_NOTE_NONE)
+        {
+            e->release(moov);
+            return 2;
+        }
 
         e->mode = mcf_decide(e->force_download, &probe,
                              e->proxy_url != NULL);
@@ -1218,7 +1224,16 @@ static int TryCand(McfEnv *e, const char *id, McMeta *m, const McCand *c,
                 if (e->proxy_opened != NULL) e->proxy_opened(e->ref, name);
                 return 0;
             }
-            L(e, "The local streaming proxy is not available.\n");
+            if (r == -3)
+            {   /* (0.6.1) the measured network is slower than the film */
+                L(e, "The network is slower than this film needs: "
+                  "downloading it first instead of streaming.\n");
+                if (e->g3note[0] == 0)
+                    Copy(e->g3note, "Network too slow to stream this "
+                         "film: downloaded first.", sizeof e->g3note);
+            }
+            else
+                L(e, "The local streaming proxy is not available.\n");
             e->mode = MCF_MODE_DOWNLOAD;
         }
         if (e->mode == MCF_MODE_STREAM)
@@ -1314,6 +1329,13 @@ static void Reset(McfEnv *e)
     e->dl_bytes = e->dl_ticks = 0;
     e->need_confirm = 0;
     e->confirm_size = 0;
+    e->g3note[0] = 0;                                     /* (0.6.1) */
+}
+
+/* (0.6.1) status line only */
+static void Status(McfEnv *e, const char *line)
+{
+    if (e->status != NULL) e->status(e->ref, line);
 }
 
 /* metadata of a hit -> m. 0 ok, -1 Fail()ed */
@@ -1363,7 +1385,7 @@ int mcf_play_file(McfEnv *e, const char *id, McMeta *m, int fi,
                   char urls[][MC_URLMAX])
 {
     char    refusal[220];
-    int     r, sawHttps = 0, checked = 0;
+    int     r, sawHttps = 0, checked = 0, alt;
     McCand  c;
     McFile *f;
     int     confirm = e->confirm_big;
@@ -1375,15 +1397,74 @@ int mcf_play_file(McfEnv *e, const char *id, McMeta *m, int fi,
         return Fail(e, "There is no such file in this item.");
     f = &m->files[fi];
     mc_file_cand(f, &c);
-    r = TryCand(e, id, m, &c, urls, refusal, &sawHttps, &checked);
+    /* (0.6.1) on a G3, a file over its decode budget with a lighter
+       rendition of the same film (mc_g3_lighter) plays that one */
+    alt = mc_cpu_g3() ? mc_g3_lighter(m, fi, mc_cpu_mhz()) : -1;
+    r = TryCand(e, id, m, &c, urls, refusal, &sawHttps, &checked,
+                alt >= 0);
     if (checked != 0)
     {
         f->state = checked > 0 ? MC_STATE_PLAYS : MC_STATE_NEWER;
-        /* (0.6) the verdict's note: "may stutter" + orange dot */
-        f->note = (checked > 0 && mc_avc_last_stutter())
-                  ? MC_FILE_NOTE_STUTTER : MC_FILE_NOTE_NONE;
-        L(e, "MARK %d %s\n", fi + 1, mc_file_token(f));
+        /* (0.6) the verdict's note: "may stutter" + orange dot;
+           (0.6.1) G3: "too heavy" */
+        f->note = checked > 0 ? mc_avc_last_note() : MC_FILE_NOTE_NONE;
+        L(e, "MARK %d %s%s\n", fi + 1, mc_file_token(f),
+          f->note == MC_FILE_NOTE_HEAVY ? " note:too-heavy"
+          : f->note == MC_FILE_NOTE_STUTTER ? " note:may-stutter" : "");
     }
+    if (r == 2)
+    {
+        McFile *g = &m->files[alt];
+        int     cs = 0, heavy = f->note == MC_FILE_NOTE_HEAVY;
+        McCand  ac;
+        char    dim[24];
+        if (g->width > 0 && g->height > 0)
+            sprintf(dim, "%dx%d ", g->width, g->height);
+        else if (strcmp(g->format, "512Kb MPEG4") == 0)
+            sprintf(dim, "%dx%d ", MC_G3_MPEG4_W, MC_G3_MPEG4_H);
+        else
+            dim[0] = 0;
+        L(e, "G3 %ld MHz: file %d %s; playing file %d (%.40s) instead.\n",
+          mc_cpu_mhz(), fi + 1, heavy ? "is too heavy" : "may stutter",
+          alt + 1, g->format);
+        sprintf(e->g3note, "G3: playing the %s%s version.", dim,
+                strcmp(g->format, "512Kb MPEG4") == 0 ? "MPEG-4" : "H.264");
+        Status(e, e->g3note);
+        refusal[0] = 0;
+        e->message[0] = 0;
+        mc_file_cand(g, &ac);
+        r = TryCand(e, id, m, &ac, urls, refusal, &sawHttps, &cs, 0);
+        if (cs != 0)
+        {
+            g->state = cs > 0 ? MC_STATE_PLAYS : MC_STATE_NEWER;
+            g->note = cs > 0 ? mc_avc_last_note() : MC_FILE_NOTE_NONE;
+            L(e, "MARK %d %s\n", alt + 1, mc_file_token(g));
+        }
+        if (r != 0 && !e->need_confirm
+            && !(r == -1 && strcmp(e->message, "Stopped.") == 0))
+        {   /* the lighter one failed (refused, no server, or a hard
+               error such as TLS / rebuild / open_ref): the chosen file
+               after all. Not after the user's Stop, nor while a big
+               download waits for the user's confirm. (0.6.1 F1) */
+            L(e, "G3: the lighter file did not play; trying file %d.\n",
+              fi + 1);
+            e->g3note[0] = 0;
+            refusal[0] = 0;
+            e->message[0] = 0;
+            r = TryCand(e, id, m, &c, urls, refusal, &sawHttps, &checked,
+                        0);
+        }
+        else if (r != 0)
+            e->g3note[0] = 0;
+    }
+    else if (r == 0 && mc_cpu_g3() && f->note == MC_FILE_NOTE_HEAVY
+             && e->g3note[0] == 0)   /* (F1) keep "Network too slow ..." */
+        Copy(e->g3note, "G3: too heavy for this Mac; expect a slideshow.",
+             sizeof e->g3note);
+    else if (r == 0 && mc_cpu_g3() && f->note == MC_FILE_NOTE_STUTTER
+             && e->g3note[0] == 0)
+        Copy(e->g3note, "G3: near this Mac's limit; it may stutter.",
+             sizeof e->g3note);
     if (r == 0) return 0;
     if (r < 0) return -1;
     /* r == 1: refused, or no server answered */
@@ -1447,7 +1528,7 @@ int mcf_play_item(McfEnv *e, const McHit *hit, McMeta *m,
     for (ci = 0; ci < m->ncand; ci++)
     {
         r = TryCand(e, hit->identifier, m, &m->cand[ci], urls, refusal,
-                    &sawHttps, &checked);
+                    &sawHttps, &checked, 0);
         if (r == 0) return 0;
         if (r < 0) return -1;
     }

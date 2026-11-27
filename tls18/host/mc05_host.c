@@ -14,6 +14,8 @@
            MC_PROXY_PORT instead of 8080 (fallback +1..+9, then OT-assigned)
            MC_PROXY_FAIL 1 = the listener cannot open (-> download)
            MC_CPU_G3     1 = pretend Gestalt said G3;  MC_G3_KBS threshold
+           MC_CPU_MHZ    (0.6.1) pretend Gestalt 'pclk' said this many MHz
+           MC_STREAM_MARGIN (0.6.1) % for the stream/download rule; -1 = off
     ---- mc02_host.c's notes ----
     mc02_host.c -- HOST ONLY. Runs Media Center 0.2's real fetch/play
     logic (mediacenter/mc_fetch.c + mc_core.c + H264Stream.c's moov
@@ -260,6 +262,8 @@ int main(int argc, char **argv)
     if ((s = getenv("MC_PREBUF_TEST")) != NULL) mcpo_test_prebuf = strtoul(s, NULL, 10);
     senv.cpu_g3 = (s = getenv("MC_CPU_G3")) != NULL && atoi(s) == 1;
     if ((s = getenv("MC_G3_KBS")) != NULL) senv.g3_kbs = strtoul(s, NULL, 10);
+    if ((s = getenv("MC_STREAM_MARGIN")) != NULL) senv.stream_margin = atol(s);
+    mc_set_cpu(senv.cpu_g3, (s = getenv("MC_CPU_MHZ")) != NULL ? atol(s) : 0L);
     mcs_init(&senv);
     gEnv.proxy_url = mcs_proxy_url;
     gEnv.proxy_opened = mcs_proxy_opened;
@@ -283,6 +287,7 @@ int main(int argc, char **argv)
         n = gS.count;
         for (i = 0; i < n && i < 5; i++) Say("  %s | %s\n", gS.hits[i].identifier, gS.hits[i].title);
     }
+    if (gEnv.g3note[0]) printf("G3NOTE %s\n", gEnv.g3note);   /* (0.6.1) */
     printf("RESULT rc=%d mode=%d reused=%d bytes=%lu confirm=%d msg=%s\n", rc, gEnv.mode,
            gEnv.reused, gEnv.dl_bytes, gEnv.need_confirm, gEnv.message);
     if (mcs_streaming())                     /* (J5) as HookRun -> EventLoop */

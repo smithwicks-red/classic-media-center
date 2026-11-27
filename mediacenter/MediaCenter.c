@@ -1,5 +1,11 @@
 /*
-    MediaCenter.c -- "Classic Media Center" 0.6
+    MediaCenter.c -- "Classic Media Center" 0.6.1
+    0.6.1 (M61): a second play of a film rewrites our own "x (MC).mov"
+    (or saves "x 2 (MC).mov" with the tail kept) and the STREAMING record,
+    the close-window event and the log use the name really saved; the LCD
+    rate is an 8 s average and says "buffered" when QuickTime is not
+    fetching; rows/buttons in Geneva; "may not play?" fits; the LCD detail
+    shows no debug lines; the font-smoothing lookup asks InterfaceLib.
     0.6 (U3): the skinned window. At Thousands of colours or more (decided
     once at launch) Media Center opens a fixed 480x360 borderless window
     (plainDBox: a 1-pixel outline outside the content) whose brushed
@@ -50,7 +56,10 @@
         Quit within 10 s closes the movie as for Stop, then quits.
       * Esc / Cmd-period never quit: they cancel a transfer, or go back.
       * a G3 (Gestalt) and a film above 64 KB/s average: log + status
-        hint to use "Download first" (no dialog).
+        hint (0.6.1: honest -- jerky video is the CPU, Download first
+        does not cure it). (0.6.1) G3 policy: decode budget per file
+        (MHz from Gestalt 'pclk'), a lighter rendition auto-picked, and
+        a pre-buffer slower than the film -> download first.
       * hook runs: "serve N" / "stop N" lines (mc_hook_parse); after the
         hand-off the app keeps serving (event loop) until Quit, a Stop
         (then it quits) or N seconds.
@@ -137,7 +146,7 @@
 */
 
 #define H264STREAM_LIBRARY 1
-#define kUserAgent   "ClassicMediaCenter/0.6 (Macintosh; PPC Mac OS 9; QuickTime 6)"
+#define kUserAgent   "ClassicMediaCenter/0.6.1 (Macintosh; PPC Mac OS 9; QuickTime 6)"
 #define kLogFileName "Media Center Log"
 #include "H264Stream.c"
 #include <Lists.h>
@@ -681,10 +690,27 @@ static int IsG3(long *cpu)
     return *cpu == 0x0108L || *cpu == 0x0120L;
 }
 
+/* (0.6.1) the clock, for the G3 decode budget (mc_core.h G3 POLICY):
+   gestaltProcClkSpeed ('pclk', Hz) is in every PowerPC Mac OS since
+   7.x and fits a long up to 2.1 GHz (every G3/G4 that runs OS 9);
+   'mclk' (gestaltProcClkSpeedMHz, MHz) is newer (CarbonLib/OS X era)
+   and only the fallback. 0 = unknown (mc_core then assumes
+   MC_G3_MHZ_UNKNOWN on a G3). NEEDS GUEST: the Pismo's value. */
+static long CpuMHz(void)
+{
+    long v = 0;
+    if (Gestalt('pclk', &v) == noErr && v >= 50000000L)
+        return (v + 500000L) / 1000000L;
+    v = 0;
+    if (Gestalt('mclk', &v) == noErr && v >= 50L && v <= 5000L)
+        return v;
+    return 0;
+}
+
 static void SetupStreaming(void)
 {
     McsEnv m;
-    long   cpu;
+    long   cpu, mhz;
     memset(&m, 0, sizeof m);
     m.now = CbTicks;
     m.log = CbLog;
@@ -692,9 +718,12 @@ static void SetupStreaming(void)
     m.qt_close = CbQtClose;
     m.idle = CbIdle;                 /* (0.5t) pre-buffer steps */
     m.cpu_g3 = IsG3(&cpu);
+    mhz = CpuMHz();
+    mc_set_cpu(m.cpu_g3, mhz);                     /* (0.6.1) G3 policy */
     mcs_init(&m);
-    Say("CPU type 0x%04lX (%s).\n", (unsigned long)cpu,
-        m.cpu_g3 ? "G3: films above 64 KB/s get a \"Download first\" hint"
+    Say("CPU type 0x%04lX, %ld MHz (%s).\n", (unsigned long)cpu, mhz,
+        m.cpu_g3 ? "G3: decode budget per file, lighter file auto-picked, "
+                   "slow network -> download first"
                  : "not a G3");
 }
 
@@ -1059,7 +1088,8 @@ static void PlayFile(int row)
     if (rc == 0)
     {
         Say("Done.\n");
-        Tell("Opened in QuickTime Player. Press Play there.");
+        if (gEnv.g3note[0] != 0) Tell(gEnv.g3note);   /* (0.6.1) */
+        else Tell("Opened in QuickTime Player. Press Play there.");
         return;
     }
     if (gEnv.need_confirm) gConfirmRow = row; /* status says "Play again" */
@@ -1152,7 +1182,7 @@ static void SkinOsEvent(EventRecord *ev);
 #define kFieldB 50
 #define kFieldMax 255         /* gTerms is 256                           */
 
-static short gFontHead = 0, gFontUI = 1, gFontSmall = 1;
+static short gFontHead = 0, gFontUI = 1, gFontSmall = 1, gFontBtn = 0;
 static short gFontTest[3];    /* MC Garamond, Hoefler Text, Palatino     */
 static short gChainId[4];
 static char  gFontHeadName[40] = "Geneva (no serif found)";
@@ -1220,10 +1250,16 @@ static void SkinFonts(void)
     gFontTest[0] = gChainId[1];
     gFontTest[1] = gChainId[2];
     gFontTest[2] = gChainId[3];
-    gFontUI = FontNamed("Charcoal");
-    if (gFontUI == 0) gFontUI = applFont;
+    /* (0.6.1) rows, search field, hint and checkbox labels in Geneva (0.6
+       used Charcoal, heavy on the guest); button labels in Charcoal, PLAIN
+       (no synthetic bold), as standard OS 9 buttons: MC_F_BTN. GetFNum
+       gives 0 when "Charcoal" is absent: 0 is the system font itself.
+       (The host mock-ups are DejaVu stand-ins.) No style leaked:
+       SkinDrawRuns sets font, size, face and mode before every run. */
+    gFontBtn = FontNamed("Charcoal");
     gFontSmall = FontNamed("Geneva");
     if (gFontSmall == 0) gFontSmall = applFont;
+    gFontUI = gFontSmall;
     CToPStr("MC Garamond", p);
     SetResLoad(false);
     h = GetNamedResource('FOND', p);
@@ -1231,28 +1267,37 @@ static void SkinFonts(void)
     gMcgFromApp = (h != NULL && HomeResFile(h) == gAppRes);
 }
 
-/* AppearanceLib's IsAntiAliasedTextEnabled, looked up by name, so no
-   library is added to the project; "unknown" if it is not there. */
+/* (0.6.1) IsAntiAliasedTextEnabled is a QuickDraw-text call (Mac OS 8.5
+   and later), exported by InterfaceLib; 0.6 asked AppearanceLib for it and
+   got -2802 (cfragNoSymbolErr: the library is there, the symbol is not).
+   Looked up by name so no library is added to the project; if it is not
+   there either, the line just says "n/a" (no error number in the log). */
 typedef pascal Boolean (*McAAProc)(SInt16 *minSize);
 static void SkinSmoothing(void)
 {
+    static const char *const libs[2] = { "InterfaceLib", "AppearanceLib" };
     CFragConnectionID conn;
-    Ptr               mainAddr, sym;
+    Ptr               mainAddr, sym = NULL;
     Str255            lib, name, errName;
     CFragSymbolClass  cls;
     SInt16            minSize = 0;
-    OSErr             err;
-    CToPStr("AppearanceLib", lib);
+    OSErr             err = -1;
+    int               i;
     CToPStr("IsAntiAliasedTextEnabled", name);
-    err = GetSharedLibrary(lib, kPowerPCCFragArch, kFindCFrag, &conn,
-                           &mainAddr, errName);
-    if (err != noErr)
-        err = GetSharedLibrary(lib, kPowerPCCFragArch, kReferenceCFrag, &conn,
+    for (i = 0; i < 2 && (err != noErr || sym == NULL); i++)
+    {
+        sym = NULL;
+        CToPStr(libs[i], lib);
+        err = GetSharedLibrary(lib, kPowerPCCFragArch, kFindCFrag, &conn,
                                &mainAddr, errName);
-    if (err == noErr) err = FindSymbol(conn, name, &sym, &cls);
+        if (err != noErr)
+            err = GetSharedLibrary(lib, kPowerPCCFragArch, kReferenceCFrag,
+                                   &conn, &mainAddr, errName);
+        if (err == noErr) err = FindSymbol(conn, name, &sym, &cls);
+    }
     if (err != noErr || sym == NULL)
     {
-        sprintf(gSmooth, "font smoothing: unknown (err %d)", (int)err);
+        strcpy(gSmooth, "font smoothing: n/a");
         return;
     }
     if (((McAAProc)sym)(&minSize))
@@ -1269,6 +1314,7 @@ static short RoleFont(int role, short *face)
     case MC_F_TITLE: case MC_F_HEAD: return gFontHead;
     case MC_F_UIBOLD: *face = bold; return gFontUI;
     case MC_F_UI: return gFontUI;
+    case MC_F_BTN: return gFontBtn;   /* (0.6.1) plain Charcoal */
     case MC_F_LCDB: *face = bold; return gFontSmall;
     case MC_F_TEST_MCG:  return gFontTest[0] ? gFontTest[0] : applFont;
     case MC_F_TEST_HOEF: return gFontTest[1] ? gFontTest[1] : applFont;
@@ -1583,7 +1629,7 @@ static void SkinAbout(void)
     int         moved = 0, done = 0, ch;
     if (ditl == NULL) return;
     AddItem(ditl, 128, 300, 148, 370, ctrlItem + btnCtrl, "OK");
-    AddItem(ditl,  14,  20,  32, 370, statText, "Classic Media Center 0.6");
+    AddItem(ditl,  14,  20,  32, 370, statText, "Classic Media Center 0.6.1");
     AddItem(ditl,  36,  20,  52, 370, statText, "by smithwicks-red");
     AddItem(ditl,  56,  20,  72, 370, statText, "http://smithwicks.freeshell.org");
     AddItem(ditl,  84,  20, 118, 370, statText,
@@ -2330,7 +2376,7 @@ int main(void)
     FlushEvents(everyEvent, 0);
     InstallAEHandlers();
     OpenLog();                  /* truncates the old log (see the diff) */
-    Say("Classic Media Center 0.6 -- Internet Archive films in "
+    Say("Classic Media Center 0.6.1 -- Internet Archive films in "
         "QuickTime Player 6. https via macTLS (BearSSL), streamed through "
         "a local proxy.\n");
     {

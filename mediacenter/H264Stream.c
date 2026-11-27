@@ -1731,6 +1731,55 @@ static OSErr OpenWithFinder(const FSSpec *spec)
     return err;
 }
 
+#ifdef H264STREAM_LIBRARY
+/* (0.6.1) Media Center's naming/reuse policy (mc_stream.c, host-tested) */
+extern int  mcs_is_mc_name(const char *name);
+extern void mcs_try_name(const char *name, int attempt, char *out);
+extern int  mcs_movie_in_use(const char *name);
+extern void mcs_saved_as(const char *actual);
+#endif
+
+/* (0.6.1) is this existing file one of our own reference movies (type
+   MooV, creator TVOD, as FSpCreate below makes them), is it NOT open
+   anywhere (QuickTime Player may still hold it), and is its resource
+   fork empty (a 'moov' resource left by a QTP "Save" would win over the
+   data fork)? */
+static int OurReferenceFile(const FSSpec *spec)
+{
+    FInfo       fi;
+    CInfoPBRec  cpb;
+    FCBPBRec    fcb;
+    Str255      nm;
+    long        k;
+    OSErr       e;
+    if (FSpGetFInfo(spec, &fi) != noErr) return 0;
+    if (fi.fdType != 'MooV' || fi.fdCreator != 'TVOD') return 0;
+    /* any open path with this name, parent and volume: do not touch it */
+    for (k = 1; k < 2000L; k++)
+    {
+        nm[0] = 0;
+        fcb.ioNamePtr = nm;
+        fcb.ioVRefNum = 0;
+        fcb.ioRefNum = 0;
+        fcb.ioFCBIndx = k;
+        e = PBGetFCBInfoSync(&fcb);
+        if (e != noErr) break;            /* past the last FCB */
+        if (fcb.ioFCBParID == spec->parID && fcb.ioFCBVRefNum == spec->vRefNum
+            && nm[0] == spec->name[0] && nm[0] <= 31
+            && memcmp(nm + 1, spec->name + 1, (size_t)nm[0]) == 0)
+            return 0;
+    }
+    memset(&cpb, 0, sizeof cpb);
+    memcpy(nm, spec->name, (size_t)spec->name[0] + 1);
+    cpb.hFileInfo.ioNamePtr = nm;
+    cpb.hFileInfo.ioVRefNum = spec->vRefNum;
+    cpb.hFileInfo.ioDirID = spec->parID;
+    cpb.hFileInfo.ioFDirIndex = 0;
+    if (PBGetCatInfoSync(&cpb) != noErr) return 0;
+    if (cpb.hFileInfo.ioFlRLgLen > 0) return 0;
+    return 1;
+}
+
 static int SaveAndOpenMovie(const char *name, const unsigned char *data,
                             long n)
 {
@@ -1740,7 +1789,7 @@ static int SaveAndOpenMovie(const char *name, const unsigned char *data,
     Str255 pname;
     OSErr  err;
     char   tryName[64];
-    int    i;
+    int    i, reused = 0, reuse = 0;
 
     err = FindFolder(kOnSystemDisk, kDesktopFolderType, kDontCreateFolder,
                      &vRef, &dirID);
@@ -1749,24 +1798,22 @@ static int SaveAndOpenMovie(const char *name, const unsigned char *data,
         Say("  Cannot find the Desktop folder (err %d).\n", (int)err);
         return -1;
     }
+#ifdef H264STREAM_LIBRARY
+    /* (0.6.1) our own "x (MC).mov" of an earlier play is only a tiny
+       reference movie: overwrite it rather than pile up "x 2", unless a
+       stream is using it right now or QuickTime Player still has it open */
+    reuse = mcs_is_mc_name(name) && !mcs_movie_in_use(name);
+#endif
 
-    /* Never overwrite: if the name is taken, try "name 2.mov" etc. */
-    strcpy(tryName, name);
-    for (i = 2; ; i++)
+    /* Never overwrite somebody else's file: if the name is taken, try
+       "name 2.mov" etc. */
+    for (i = 1; ; i++)
     {
-        CToPStr(tryName, pname);
-        err = FSMakeFSSpec(vRef, dirID, pname, &spec);
-        if (err == fnfErr) break;
-        if (err != noErr)
-        {
-            Say("  Bad file name \"%s\" (err %d).\n", tryName, (int)err);
-            return -1;
-        }
-        if (i > 99)
-        {
-            Say("  Too many files called %s on the Desktop.\n", name);
-            return -1;
-        }
+#ifdef H264STREAM_LIBRARY
+        mcs_try_name(name, i, tryName);
+#else
+        if (i == 1) strcpy(tryName, name);
+        else
         {
             char base[40];
             char suffix[8];
@@ -1777,16 +1824,45 @@ static int SaveAndOpenMovie(const char *name, const unsigned char *data,
             base[bl] = 0;
             sprintf(tryName, "%s%s.mov", base, suffix);
         }
+#endif
+        CToPStr(tryName, pname);
+        err = FSMakeFSSpec(vRef, dirID, pname, &spec);
+        if (err == fnfErr)
+        {
+            err = FSpCreate(&spec, 'TVOD', 'MooV', smSystemScript);
+            if (err == noErr) err = FSpOpenDF(&spec, fsRdWrPerm, &ref);
+            if (err != noErr)
+            {
+                Say("  Could not create \"%s\" on the Desktop (err %d).\n",
+                    tryName, (int)err);
+                return -1;
+            }
+            break;
+        }
+        if (err != noErr)
+        {
+            Say("  Bad file name \"%s\" (err %d).\n", tryName, (int)err);
+            return -1;
+        }
+        if (i == 1 && reuse && OurReferenceFile(&spec))
+        {
+            err = FSpOpenDF(&spec, fsRdWrPerm, &ref);
+            if (err == noErr)
+            {
+                (void)SetEOF(ref, 0);
+                reused = 1;
+                break;
+            }
+            Say("  \"%s\" is in use (err %d): saving under another name.\n",
+                tryName, (int)err);
+        }
+        if (i > 99)
+        {
+            Say("  Too many files called %s on the Desktop.\n", name);
+            return -1;
+        }
     }
 
-    err = FSpCreate(&spec, 'TVOD', 'MooV', smSystemScript);
-    if (err == noErr) err = FSpOpenDF(&spec, fsRdWrPerm, &ref);
-    if (err != noErr)
-    {
-        Say("  Could not create \"%s\" on the Desktop (err %d).\n",
-            tryName, (int)err);
-        return -1;
-    }
     count = n;
     err = FSWrite(ref, &count, data);
     FSClose(ref);
@@ -1794,10 +1870,14 @@ static int SaveAndOpenMovie(const char *name, const unsigned char *data,
     if (err != noErr || count != n)
     {
         Say("  Write failed (err %d).\n", (int)err);
+        (void)FSpDelete(&spec);   /* (0.6.1) no truncated/half file left */
         return -1;
     }
-    Say("Saved the reference movie on the Desktop as \"%s\" (%ld bytes).\n",
-        tryName, n);
+    Say("%s the reference movie on the Desktop as \"%s\" (%ld bytes).\n",
+        reused ? "Rewrote" : "Saved", tryName, n);
+#ifdef H264STREAM_LIBRARY
+    mcs_saved_as(tryName);   /* (0.6.1) the record and the close use THIS */
+#endif
 
     err = OpenWithFinder(&spec);
     if (err != noErr)

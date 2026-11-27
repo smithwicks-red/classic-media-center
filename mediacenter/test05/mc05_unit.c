@@ -307,14 +307,137 @@ static void t_status(void)
     mcs_proxy_opened(NULL, "j (MC).mov");
     g_active = 1;
     mcs_status_text(s, sizeof s);
-    CHECK(strncmp(s, "Streaming via secure proxy: ", 28) == 0 && strstr(s, "KB/s") && strstr(s, "1 connection."), "status text");
+    CHECK(strncmp(s, "Streaming via secure proxy: ", 28) == 0 && (strstr(s, "KB/s") || strstr(s, "buffered")) && strstr(s, "1 connection."), "status text");
     g_active = 0;
     mcs_status_text(s, sizeof s);
     CHECK(strstr(s, "idle") != NULL && strstr(s, "Stop ends") != NULL, "idle status text");
 }
 
+/* (0.6.1) second play: names, reuse, the record */
+static void t_second_play(void)
+{
+    char           o[64], big[64];
+    int            i, ok = 1;
+    unsigned short port;
+    (void)mcpo_open(NULL, NULL, &port);   /* the stub listener is "open" */
+    printf("second play (0.6.1)\n");
+    CHECK(mcs_is_mc_name("Film (MC).mov") && mcs_is_mc_name("film (mc).MOV") && !mcs_is_mc_name("Film.mov")
+          && !mcs_is_mc_name("(MC).mov"), "our names: ' (MC).mov' tail");
+    mcs_try_name("Film (MC).mov", 1, o);
+    CHECK(strcmp(o, "Film (MC).mov") == 0, "first play: the name as is");
+    mcs_try_name("Film (MC).mov", 2, o);
+    CHECK(strcmp(o, "Film 2 (MC).mov") == 0, "second try keeps the (MC) tail: 'Film 2 (MC).mov' (0.6: '(M 2.mov')");
+    mcs_try_name("Film (MC).mov", 10, o);
+    CHECK(strcmp(o, "Film 10 (MC).mov") == 0, "try 10");
+    mcs_try_name("Plain.mov", 2, o);
+    CHECK(strcmp(o, "Plain 2.mov") == 0, "a name without our tail: 'Plain 2.mov'");
+    strcpy(big, "ABCDEFGHIJKLMNOPQRSTUV (MC).mov");
+    CHECK(strlen(big) == 31, "test name is 31 chars");
+    mcs_try_name(big, 1, o);
+    CHECK(strcmp(o, big) == 0, "31 chars, first play: unchanged");
+    for (i = 2; i <= 99; i++)
+    {
+        mcs_try_name(big, i, o);
+        if (strlen(o) > 31 || !mcs_is_mc_name(o) || strncmp(o, "ABCDEFGHIJ", 10) != 0) ok = 0;
+    }
+    CHECK(ok, "31-char name, tries 2..99: <= 31 chars, always ends ' (MC).mov'");
+    mcs_try_name(big, 2, o);
+    CHECK(strcmp(o, "ABCDEFGHIJKLMNOPQRST 2 (MC).mov") == 0 && strlen(o) == 31, "31-char name, second: base cut to 20, exactly 31");
+    mcs_try_name("ABCDEFGHIJKLMNOPQRS  (MC).mov", 2, o);
+    CHECK(strstr(o, "S 2 (MC).mov") != NULL && strstr(o, "  ") == NULL, "no double space where the base was cut");
+    /* the record and the close use the name really saved */
+    env(0);
+    mcs_saved_as("Film 2 (MC).mov");
+    mcs_proxy_opened(NULL, "Film (MC).mov");
+    CHECK(strstr(g_logall, "STREAMING \"Film 2 (MC).mov\"") != NULL, "STREAMING line: the saved name");
+    g_active = 1; mcs_stop();
+    CHECK(strcmp(g_trace, "close Film 2 (MC).mov;") == 0, "Stop's Apple event names the saved window");
+    /* in use: no rewrite while streaming; free after Stop */
+    env(0);
+    CHECK(!mcs_movie_in_use("Film (MC).mov"), "nothing streaming: not in use (reuse the file)");
+    mcs_proxy_opened(NULL, "Film (MC).mov");
+    CHECK(mcs_movie_in_use("Film (MC).mov") && mcs_movie_in_use("FILM (MC).MOV") && !mcs_movie_in_use("Other (MC).mov"),
+          "streaming: in use (uniquify instead)");
+    g_active = 1; mcs_stop(); g_now += MCS_STOP_WAIT; mcs_poll();
+    CHECK(!mcs_movie_in_use("Film (MC).mov"), "after Stop: free again (second play rewrites it)");
+    mcs_proxy_opened(NULL, "Film (MC).mov");
+    CHECK(strstr(g_logall, "STREAMING \"Film (MC).mov\"") != NULL && mcs_movie_in_use("Film (MC).mov"), "second play, same name recorded");
+}
+
+/* (0.6.1) KB/s over the last 8 samples; 'buffered' when nothing moved */
+static void t_rate(void)
+{
+    unsigned long t = 1000, b = 0;
+    int           i;
+    char          s[200];
+    printf("rate (0.6.1)\n");
+    mcs_rate_reset();
+    CHECK(mcs_rate_feed(t, b) == 0, "first sample: no rate yet");
+    t += 60; b += 100UL * 1024UL;
+    CHECK(mcs_rate_feed(t, b) == 100, "100 KB in 1 s = 100 KB/s");
+    /* a burst then silence: a 1 s window would say 0, the 8 s window keeps the average */
+    for (i = 0; i < 4; i++) { t += 60; (void)mcs_rate_feed(t, b); }
+    CHECK(mcs_rate_feed(t, b) <= 100 && mcs_rate_feed(t + 60, b) > 0, "burst + 4 s idle: still > 0 (average, not instant)");
+    for (i = 0; i < 12; i++) { t += 60; (void)mcs_rate_feed(t, b); }
+    CHECK(mcs_rate_feed(t + 60, b) == 0, "no bytes for the whole 8 s window: 0");
+    /* steady 200 KB/s */
+    mcs_rate_reset(); t = 5000; b = 0;
+    for (i = 0; i < 20; i++) { (void)mcs_rate_feed(t, b); t += 60; b += 200UL * 1024UL; }
+    CHECK(mcs_rate_feed(t, b) == 200, "steady 200 KB/s, 20 samples (ring wrapped)");
+    CHECK(mcs_rate_feed(t + 30, b + 100UL * 1024UL) == 200, "half-second step still 200");
+    /* big transfer: no overflow */
+    mcs_rate_reset(); t = 0; b = 0;
+    (void)mcs_rate_feed(t, b); t += 480; b += 400UL * 1024UL * 1024UL;
+    CHECK(mcs_rate_feed(t, b) == 51200, "400 MB in 8 s = 51200 KB/s, no overflow");
+    /* the status text: buffered (no 0 KB/s) vs rate */
+    env(0);
+    mcs_proxy_opened(NULL, "r (MC).mov");
+    g_active = 1;
+    (void)mcs_rate_feed(100, 0); (void)mcs_rate_feed(160, 0);
+    mcs_status_text(s, sizeof s);
+    CHECK(strncmp(s, "Streaming via secure proxy: buffered, ", 38) == 0 && strstr(s, "0 KB/s") == NULL && strstr(s, "1 connection."), "connection open, nothing fetched for the window: 'buffered', never '0 KB/s'");
+    (void)mcs_rate_feed(220, 300UL * 1024UL);
+    mcs_status_text(s, sizeof s);
+    CHECK(strstr(s, "KB/s,") != NULL && strstr(s, "buffered") == NULL, "bytes moved: a KB/s figure");
+    /* (0.6.1 F1) a trickle that rounds to 0 KB/s is a slow link, not "buffered" */
+    mcs_rate_reset();
+    (void)mcs_rate_feed(100, 0); (void)mcs_rate_feed(160, 500UL);
+    mcs_status_text(s, sizeof s);
+    CHECK(strstr(s, "buffered") == NULL && strstr(s, "0 KB/s,") != NULL, "500 bytes in the window (rate rounds to 0): '0 KB/s', not 'buffered'");
+    mcs_rate_reset();
+    (void)mcs_rate_feed(100, 700UL); (void)mcs_rate_feed(160, 700UL);
+    mcs_status_text(s, sizeof s);
+    CHECK(strncmp(s, "Streaming via secure proxy: buffered, ", 38) == 0, "zero bytes in the window (non-zero total): 'buffered'");
+}
+
+/* (0.6.1) G3 policy: stream vs download from the pre-buffer's rate */
+static void t_netrule(void)
+{
+    unsigned long k;
+    /* the Pismo log: 557,712 B in 335 ticks = 97 KB/s; film 93 KB/s */
+    CHECK(mcs_net_download(557712UL, 335UL, 93UL, 0L, &k) == 1 && k == 97UL,
+          "net: Pismo star-trek 97 KB/s < 93 x 1.25 -> download");
+    CHECK(mcs_net_download(557712UL, 335UL, 64UL, 0L, &k) == 0 && k == 97UL,
+          "net: 97 KB/s >= 64 x 1.25 (512Kb MPEG4) -> stream");
+    CHECK(mcs_net_download(557712UL, 335UL, 78UL, 0L, &k) == 0,
+          "net: edge: 97.55 KB/s >= 78 x 1.25 = 97.5 -> stream");
+    CHECK(mcs_net_download(557712UL, 335UL, 79UL, 0L, &k) == 1,
+          "net: edge: 97.55 < 79 x 1.25 = 98.75 -> download");
+    CHECK(mcs_net_download(557712UL, 335UL, 93UL, 100L, &k) == 0,
+          "net: margin 100%: 97 >= 93 -> stream");
+    CHECK(mcs_net_download(100000UL, 335UL, 500UL, 0L, &k) == 0 && k == 0,
+          "net: < 128 KB pre-buffered: not judged (stream)");
+    CHECK(mcs_net_download(557712UL, 10UL, 5000UL, 0L, &k) == 0 && k == 0,
+          "net: < 30 ticks (fast LAN / host loopback): not judged");
+    CHECK(mcs_net_download(557712UL, 335UL, 0UL, 0L, &k) == 0 && k == 97UL,
+          "net: film rate unknown: stream (rate still reported)");
+    CHECK(MCS_STREAM_MARGIN_PCT == 125L, "net: MCS_STREAM_MARGIN_PCT 125");
+}
+
 int main(void)
 {
+    t_netrule();
+    t_second_play(); t_rate();
     t_names(); t_rates(); t_dref(); t_stop(); t_quit(); t_hook(); t_status();
     mcs_shutdown();
     printf("mc05_unit: %d passed, %d failed\n", npass, nfail);

@@ -24,7 +24,35 @@ It needs the H.264 decoder for QuickTime 6 from
 **H264 Decoder 17d + AVCDecLib** for Main/High profile (the older v15 decoder plays
 Baseline only, and Media Center tells you so).
 
-## Status: 0.6 (22 November 2026)
+## Status: 0.6.1 (27 November 2026)
+
+![Media Center 0.6.1, every screen as drawn by the app itself on Mac OS 9](docs/screenshots/mc061-screens-os9.png)
+
+0.6.1 is a small update to 0.6 (the QuickTime Player 6 style window, described below):
+
+- **Second play fixed.** The reference movie keeps its " (MC).mov" tail (a second play
+  of a film makes "name 2 (MC).mov", at most 31 characters), and our own old one is
+  reused when QuickTime no longer has it open, so Stop and Quit can close QuickTime's
+  window by name.
+- **KB/s** is an 8-second average and never shows "0 KB/s"; while QuickTime rests the
+  display says "buffered".
+- **Look:** Geneva for rows and buttons, "may fail?" / "old decoder?" instead of
+  "may not play?", and technical log lines no longer show on the LCD.
+- **G3-aware playback.** On a G3 (Gestalt CPU type and clock) each H.264 file gets a
+  budget check from its macroblocks per second (size x frame rate, weighted for profile
+  and B-frames). Rows are marked "may stutter" or "too heavy". If a lighter rendition of
+  the same film exists (same Internet Archive "original", for example a 320x240 MPEG-4
+  file), that one plays and the LCD says so. A stream that the network cannot keep up
+  with is downloaded first. The "Download first" hint is no longer given for a jerky
+  picture on a G3, which is the CPU. G4 behaviour is unchanged. The constants are first
+  guesses; see `mediacenter/BUILD_NOTES_061.md`.
+- **Creator code** is `CMdC`; the About box, log and user agent say 0.6.1.
+
+**Not yet tested on real hardware:** the G3 policy and its numbers, a second play while
+QuickTime still holds the first reference movie, and the switch to a lighter file. They
+were proved on a Linux rig (x86-64 with sanitizers, and PowerPC under qemu).
+
+### 0.6: the new look (22 November 2026)
 
 ![Media Center 0.6, every screen as drawn by the app itself on Mac OS 9](docs/screenshots/mc06-screens-os9.png)
 
@@ -62,19 +90,18 @@ Streaming itself is unchanged from 0.5u:
   never asks for a later part of an http movie on a seek, so you cannot jump past what
   has arrived.
 
-Known issues in 0.6:
+Known issues in 0.6.1:
 
-- Playing the same film twice leaves the first reference movie on the Desktop; the
-  second gets a shortened name, and Stop/Quit then cannot ask QuickTime to close it by
-  name, so Media Center cuts the connection instead. Delete old "(MC).mov" files from
-  the Desktop for now.
-- The KB/s figure can read 0 while a film is still being served.
+- The untested items listed above.
 - In the VM (not on real hardware) QuickTime ignores Stop's request to close the window.
 
 ## Requirements and settings
 
 - A PowerPC Mac with Mac OS 9.2.2, QuickTime 6.0.x, Open Transport.
-- **640x480 needs a G4** (AltiVec, through AVCDecLib). G3: untested.
+- **640x480 needs a G4** (AltiVec, through AVCDecLib). On a G3, 0.6.1 marks files by
+  their size and frame rate (320x240 should play; 480x360 may stutter; 640x480 is too
+  heavy) and prefers a lighter rendition; these limits are not yet measured on real G3
+  hardware.
 - **Memory (important):**
   - Media Center: Get Info > Memory, Preferred **9216 K**, Minimum **8192 K**
     (it holds up to 4 MB of the film in RAM before handing it to QuickTime).
@@ -122,15 +149,15 @@ project folder with `tls18/mactls/` beside them, and add `font/MC Garamond.rsrc`
 resources (id 279) end up in the application; libraries: InterfaceLib, MSL C (PPC),
 OpenTransportLib, OpenTptInternetLib, OpenTransportAppPPC.o, OpenTptInetPPC.o,
 QuickTimeLib. Set the partition to 9216 K preferred / 8192 K minimum. The 0.6 steps are
-in `mediacenter/BUILD_NOTES_06.md`, the history in `mediacenter/BUILD_NOTES*.md`.
+in `mediacenter/BUILD_NOTES_06.md` (0.6.1 changes: `BUILD_NOTES_061.md`), the history in `mediacenter/BUILD_NOTES*.md`.
 Tip: close every other project in CodeWarrior before a scripted Make; it acts on the
 front project, and it tracks files by alias, so a stale copy elsewhere can be picked up.
 
 Host tests (Linux, gcc, Python 3):
 
 ```sh
-sh mediacenter/run_tests.sh                       # mc_core
-sh mediacenter/test05/run_mc05_unit.sh            # streaming policy
+sh mediacenter/run_tests.sh                       # mc_core, mc_test04, and 0.6.1 mc_test061 (G3 policy)
+sh mediacenter/test05/run_mc05_unit.sh            # streaming policy, second-play names, rate average, stream-or-download rule
 sh mediacenter/test05t/run_test_mcn.sh            # notifier state machine
 sh tls18/host/run_mc05_tests.sh CLIPDIR           # whole app end to end (needs ffmpeg-made clips)
 sh mediacenter/test06/run_ui_test.sh              # 0.6 UI controller (x86 + qemu-ppc)

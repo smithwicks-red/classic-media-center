@@ -101,6 +101,12 @@ ModalFilterUPP NewModalFilterUPP(ModalFilterProcPtr p); void DisposeModalFilterU
 void DisposeDialog(DialogPtr d); Handle NewHandleClear(Size n); void HLock(Handle h); void HUnlock(Handle h);
 OSErr AEGetParamPtr(const AppleEvent *e, AEKeyword k, DescType t, DescType *at, void *p, Size max, Size *sz);
 OSErr FSpCreate(const FSSpec *s, OSType creator, OSType type, ScriptCode sc);
+/* (0.6.1) Files.h: struct FInfo { OSType fdType, fdCreator; ... } */
+typedef struct { OSType fdType; OSType fdCreator; unsigned short fdFlags; short fdLocV, fdLocH, fdFldr; } FInfo;
+/* (F1) open-file scan: Universal Interfaces 3.4.1 field names */
+typedef struct { StringPtr ioNamePtr; short ioVRefNum; short ioRefNum; long ioFCBIndx; long ioFCBFlNm; long ioFCBParID; short ioFCBVRefNum; } FCBPBRec;
+OSErr PBGetFCBInfoSync(FCBPBRec *pb);
+OSErr FSpGetFInfo(const FSSpec *s, FInfo *fndrInfo);
 OSErr FSpOpenDF(const FSSpec *s, SInt8 perm, short *ref); OSErr SetEOF(short ref, long n);
 OSErr FSWrite(short ref, long *n, const void *p); OSErr FSClose(short ref); OSErr FlushVol(ConstStr63Param v, short vref);
 void InitCursor(void);

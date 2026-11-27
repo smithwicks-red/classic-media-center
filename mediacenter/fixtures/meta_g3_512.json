@@ -1,0 +1,8 @@
+{"server":"ia800100.us.archive.org","dir":"/1/items/g3film","metadata":{"title":"G3 film"},
+ "files":[
+  {"name":"voyager.avi","source":"original","format":"DivX","size":"300000000"},
+  {"name":"voyager.ia.mp4","source":"derivative","format":"h.264 IA","original":"voyager.avi","size":"280000000","width":"640","height":"480","length":"2700.1"},
+  {"name":"voyager_512kb.mp4","source":"derivative","format":"512Kb MPEG4","original":"voyager.avi","size":"180000000","length":"2700.1"},
+  {"name":"other.ia.mp4","source":"derivative","format":"h.264 IA","original":"other.mkv","size":"280000000","width":"640","height":"480"},
+  {"name":"other.png","source":"derivative","format":"PNG"}
+ ]}

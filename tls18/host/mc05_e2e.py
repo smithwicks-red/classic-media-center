@@ -216,9 +216,32 @@ def good(r, start=0, src=None):
         and h.get('content-range') == 'bytes %d-%d/%d' % (start, len(SRC_) - 1, len(SRC_))
 
 
+RETRIES = [0]
+
+
 def start_stream(env=None, extra=()):
-    a = App(['httpsonly'] + list(extra), env)
-    path, url = a.dref()
+    # (0.6.1) host flake, also in the 0.6 base: now and then the proxy's
+    # FIRST upstream request to the test server is closed within ~4 ms (502),
+    # twice in a row, and Play correctly falls back to a download (no
+    # reference movie). Start the app again (max 3 times; counted and
+    # printed) ONLY when the app log shows that 502. (F1) Any other missing
+    # reference movie (a real fallback, e.g. a -3 misfire) fails at once.
+    for attempt in range(3):
+        a = App(['httpsonly'] + list(extra), env)
+        path, url = a.dref()
+        if path is not None and url is not None:
+            return a, path, url
+        sig = [l for _, l in list(a.lines) if re.search(r'\b502\b', l)]
+        if not sig:
+            ok(False, 'start_stream: no reference movie and no upstream 502 in the app log (not the flake): %s'
+               % ((a.lines[-1][1] if a.lines else 'no output')[:120]))
+            a.finish(30)
+            print('mc05 e2e: %d passed, %d failed (%d flake restarts) -- stopped: real fallback' % (PASS, FAIL, RETRIES[0]))
+            sys.exit(1)
+        RETRIES[0] += 1
+        print('NOTE start_stream: no reference movie (attempt %d, restart #%d): upstream 502 flake (%s), starting again'
+              % (attempt + 1, RETRIES[0], sig[0][:100]))
+        a.finish(30)
     return a, path, url
 
 
@@ -231,7 +254,7 @@ def main():
         tests()
     finally:
         srv.kill()
-    print('mc05 e2e: %d passed, %d failed, sanitizer reports %d' % (PASS, FAIL, SAN))
+    print('mc05 e2e: %d passed, %d failed, sanitizer reports %d (%d flake restarts)' % (PASS, FAIL, SAN, RETRIES[0]))
     sys.exit(1 if FAIL or SAN else 0)
 
 
